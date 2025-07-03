@@ -393,8 +393,8 @@ class Opcode(ABC):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        """Computes the stack metadata for the indices given by `next_bytecode_indices`."""
+    ) -> tuple[StackMetadata, ...]:
+        """Computes the stack metadata for each index given by `next_bytecode_indices`."""
         ...
 
     @abstractmethod
@@ -442,10 +442,10 @@ class LoadConstant(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource((instruction,), type(self.constant))
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append(self.constant)
@@ -495,10 +495,10 @@ class LoadGlobal(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource((instruction,), type(bytecode.globals.get(self.name, object())))
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         try:
@@ -543,14 +543,14 @@ class LoadLocal(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         local_metadata = previous_stack_metadata.variables[self.name]
         return previous_stack_metadata.push(
             ValueSource(
                 tuple(*[metadata.sources for metadata in local_metadata]),
                 _determine_type([metadata.value_type for metadata in local_metadata]),
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         try:
@@ -600,13 +600,13 @@ class LoadCell(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource(
                 (instruction,),
                 object,  # TODO
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         try:
@@ -652,14 +652,13 @@ class LoadSynthetic(Opcode):
     StoreSynthetic(index=0)
 
     label loop_start
+
     LoadSynthetic(index=0)
-    TryNext()
+    GetNextElseJumpTo(target=loop_end)
     StoreLocal(name="item")
     JumpTo(target=loop_start)
 
-    Note: an exception handler is used to exit the loop if `TryNext` raises
-    an exception. `StoreSynthetic`/`LoadSynthetic` is used to store the collection's
-    iterator.
+    label loop_end
     """
 
     index: int
@@ -669,7 +668,7 @@ class LoadSynthetic(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         synthetic_metadata = previous_stack_metadata.synthetic_variables[self.index]
         return previous_stack_metadata.push(
             ValueSource(
@@ -678,7 +677,7 @@ class LoadSynthetic(Opcode):
                     [metadata.value_type for metadata in synthetic_metadata]
                 ),
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append(frame.synthetic_variables[self.index])
@@ -712,8 +711,8 @@ class StoreGlobal(Opcode):
 
     >>> global int
     >>> int = 5
-    LoadConstant(constant=10)
-    LoadGlobal(name="int")
+    LoadConstant(constant=5)
+    StoreGlobal(name="int")
     """
 
     name: str
@@ -723,8 +722,8 @@ class StoreGlobal(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         frame.globals[self.name] = frame.stack.pop()
@@ -764,9 +763,9 @@ class StoreLocal(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
-        return previous_stack_metadata.pop(1).set_variable(self.name, top)
+        return previous_stack_metadata.pop(1).set_variable(self.name, top),
 
     def execute(self, frame: "Frame") -> None:
         frame.variables[self.name] = frame.stack.pop()
@@ -809,8 +808,8 @@ class StoreCell(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         frame.closure[self.name].cell_contents = frame.stack.pop()
@@ -844,14 +843,13 @@ class StoreSynthetic(Opcode):
     StoreSynthetic(index=0)
 
     label loop_start
+
     LoadSynthetic(index=0)
-    TryNext()
+    GetNextElseJumpTo(target=loop_end)
     StoreLocal(name="item")
     JumpTo(target=loop_start)
 
-    Note: an exception handler is used to exit the loop if `TryNext` raises
-    an exception. `StoreSynthetic`/`LoadSynthetic` is used to store the collection's
-    iterator.
+    label loop_end
     """
 
     index: int
@@ -861,9 +859,9 @@ class StoreSynthetic(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
-        return previous_stack_metadata.pop(1).set_synthetic(self.index, top)
+        return previous_stack_metadata.pop(1).set_synthetic(self.index, top),
 
     def execute(self, frame: "Frame") -> None:
         frame.synthetic_variables[self.index] = frame.stack.pop()
@@ -908,8 +906,8 @@ class DeleteGlobal(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata,
 
     def execute(self, frame: "Frame") -> None:
         try:
@@ -954,10 +952,10 @@ class DeleteLocal(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         new_metadata = previous_stack_metadata.pop(0)
         new_metadata.variables.pop(self.name)
-        return new_metadata
+        return new_metadata,
 
     def execute(self, frame: "Frame") -> None:
         try:
@@ -1007,13 +1005,13 @@ class DeleteCell(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource(
                 (instruction,),
                 object,  # TODO
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         try:
@@ -1072,13 +1070,13 @@ class LoadAttr(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1).push(
             ValueSource(
                 sources=(instruction,),
                 value_type=object,  # TODO
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         obj = frame.stack.pop()
@@ -1128,8 +1126,8 @@ class StoreAttr(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(2)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(2),
 
     def execute(self, frame: "Frame") -> None:
         obj = frame.stack.pop()
@@ -1169,8 +1167,8 @@ class DeleteAttr(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         obj = frame.stack.pop()
@@ -1204,8 +1202,8 @@ class Nop(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata,
 
     def execute(self, frame: "Frame") -> None:
         pass
@@ -1236,11 +1234,11 @@ class Dup(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
         return replace(
             previous_stack_metadata, stack=previous_stack_metadata.stack + (top,)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         top = frame.stack[-1]
@@ -1283,14 +1281,14 @@ class DupX1(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
         return replace(
             previous_stack_metadata,
             stack=previous_stack_metadata.stack[:-2]
             + (top,)
             + previous_stack_metadata.stack[-2:],
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         top = frame.stack[-1]
@@ -1321,8 +1319,8 @@ class Pop(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack = frame.stack[:-1]
@@ -1363,12 +1361,12 @@ class Swap(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return replace(
             previous_stack_metadata,
             stack=previous_stack_metadata.stack[:-2]
             + (previous_stack_metadata.stack[-1], previous_stack_metadata.stack[-2]),
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack = frame.stack[:-2] + [frame.stack[-1], frame.stack[-2]]
@@ -1400,12 +1398,12 @@ class ReturnValue(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return StackMetadata(
             stack=(),
             variables={},
             synthetic_variables=(),
-        )
+        ),
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -1445,12 +1443,12 @@ class ReraiseLast(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return StackMetadata(
             stack=(),
             variables={},
             synthetic_variables=(),
-        )
+        ),
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -1482,12 +1480,12 @@ class Raise(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return StackMetadata(
             stack=(),
             variables={},
             synthetic_variables=(),
-        )
+        ),
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -1520,12 +1518,12 @@ class RaiseWithCause(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return StackMetadata(
             stack=(),
             variables={},
             synthetic_variables=(),
-        )
+        ),
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -1572,8 +1570,8 @@ class IfTrue(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return instruction.bytecode_index + 1, self.target.index
@@ -1612,8 +1610,8 @@ class IfFalse(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return instruction.bytecode_index + 1, self.target.index
@@ -1653,8 +1651,8 @@ class JumpTo(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata,
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return (self.target.index,)
@@ -1691,13 +1689,13 @@ class UnaryOp(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1).push(
             ValueSource(
                 sources=(instruction,),
                 value_type=object,  # TODO
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         top = frame.stack.pop()
@@ -1772,13 +1770,13 @@ class BinaryOp(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(2).push(
             ValueSource(
                 sources=(instruction,),
                 value_type=object,  # TODO
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         right = frame.stack.pop()
@@ -1824,10 +1822,10 @@ class IsSameAs(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(2).push(
             ValueSource(sources=(instruction,), value_type=bool)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         right = frame.stack.pop()
@@ -1941,10 +1939,10 @@ class FormatValue(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1).push(
             ValueSource(sources=(instruction,), value_type=str)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         value = self.conversion.convert(frame.stack.pop())
@@ -1982,10 +1980,10 @@ class JoinStringValues(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(self.count).push(
             ValueSource(sources=(instruction,), value_type=str)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         values = frame.stack[-self.count :]
@@ -2030,9 +2028,9 @@ class CreateCallBuilder(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         # TODO: CallBuilder type
-        return previous_stack_metadata
+        return previous_stack_metadata,
 
     def execute(self, frame: "Frame") -> None:
         func = frame.stack.pop()
@@ -2067,8 +2065,8 @@ class WithPositionalArg(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         arg = frame.stack.pop()
@@ -2104,8 +2102,8 @@ class AppendPositionalArg(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         arg = frame.stack.pop()
@@ -2141,8 +2139,8 @@ class WithKeywordArg(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         arg = frame.stack.pop()
@@ -2176,8 +2174,8 @@ class ExtendPositionalArgs(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         arg = frame.stack.pop()
@@ -2211,8 +2209,8 @@ class ExtendKeywordArgs(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         arg = frame.stack.pop()
@@ -2258,13 +2256,13 @@ class CallWithBuilder(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1).push(
             ValueSource(
                 sources=(instruction,),
                 value_type=object,  # TODO
             )
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         prepared_call = frame.stack.pop()
@@ -2296,10 +2294,10 @@ class NewList(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource(sources=(instruction,), value_type=list)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append([])
@@ -2329,10 +2327,10 @@ class NewSet(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource(sources=(instruction,), value_type=set)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append(set())
@@ -2360,10 +2358,10 @@ class NewDict(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.push(
             ValueSource(sources=(instruction,), value_type=dict)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append(dict())
@@ -2394,8 +2392,8 @@ class ListAppend(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         item = frame.stack.pop()
@@ -2427,8 +2425,8 @@ class ListExtend(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         item = frame.stack.pop()
@@ -2460,8 +2458,8 @@ class SetAdd(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         item = frame.stack.pop()
@@ -2493,8 +2491,8 @@ class SetUpdate(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         item = frame.stack.pop()
@@ -2528,8 +2526,8 @@ class DictPut(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(2)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(2),
 
     def execute(self, frame: "Frame") -> None:
         value = frame.stack.pop()
@@ -2562,8 +2560,8 @@ class DictUpdate(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(1)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         value = frame.stack.pop()
@@ -2597,10 +2595,10 @@ class ListToTuple(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1).push(
             ValueSource(previous_stack_metadata.stack[-1].sources, tuple)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         item = frame.stack.pop()
@@ -2632,10 +2630,10 @@ class GetItem(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(2).push(
             ValueSource(sources=(instruction,), value_type=object)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         index, items = frame.stack.pop(), frame.stack.pop()
@@ -2669,8 +2667,8 @@ class SetItem(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(3)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(3),
 
     def execute(self, frame: "Frame") -> None:
         index, items, value = frame.stack.pop(), frame.stack.pop(), frame.stack.pop()
@@ -2702,8 +2700,8 @@ class DeleteItem(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
-        return previous_stack_metadata.pop(2)
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(2),
 
     def execute(self, frame: "Frame") -> None:
         index, items = frame.stack.pop(), frame.stack.pop()
@@ -2736,10 +2734,10 @@ class GetIterator(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1).push(
             ValueSource(sources=(instruction,), value_type=Iterator)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         item = frame.stack.pop()
@@ -2747,21 +2745,58 @@ class GetIterator(Opcode):
 
 
 @dataclass(frozen=True)
-class TryNext(Opcode):
-    # TODO: Rework this before writing docstring
+class GetNextElseJumpTo(Opcode):
+    """Gets the next element of the iterator at top of stack. If next raises `StopIteration`, jump to target instead.
+
+    Notes
+    -----
+        | GetNextElseJumpTo
+        | Stack Effect: 0 if iterator has next element, -1 otherwise
+        | Prior: ..., iterator
+        | After (has next element): ..., next_element
+        | After (iterator exhausted): ...
+
+    Attributes
+    ----------
+    target: Label
+        Where to jump to if the iterator is exhausted.
+
+    Examples
+    --------
+    >>> for item in collection:
+    ...     pass
+    LoadLocal(name="collection")
+    GetIterator()
+    StoreSynthetic(index=0)
+
+    label loop_start
+
+    LoadSynthetic(index=0)
+    GetNextElseJumpTo(target=loop_end)
+    StoreLocal(name="item")
+    JumpTo(target=loop_start)
+
+    label loop_end
+    """
+    target: Label
+
     def next_stack_metadata(
         self,
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
+        # TODO: Get type of iterable
         return previous_stack_metadata.pop(1).push(
             ValueSource(sources=(instruction,), value_type=object)
-        )
+        ), previous_stack_metadata.pop(1)
 
     def execute(self, frame: "Frame") -> None:
         iterator = frame.stack.pop()
-        frame.stack.append(next(iterator))
+        try:
+            frame.stack.append(next(iterator))
+        except StopIteration:
+            frame.bytecode_index = self.target.index - 1
 
 
 @dataclass(frozen=True)
@@ -2818,7 +2853,7 @@ class UnpackElements(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         values = []
 
         for i in range(self.before_count):
@@ -2830,7 +2865,7 @@ class UnpackElements(Opcode):
         for i in range(self.after_count):
             values.append(ValueSource(sources=(instruction,), value_type=object))
 
-        return previous_stack_metadata.pop(1).push(*values)
+        return previous_stack_metadata.pop(1).push(*values),
 
     def execute(self, frame: "Frame") -> None:
         items = frame.stack.pop()
@@ -2909,10 +2944,10 @@ class IsContainedIn(Opcode):
         instruction: "Instruction",
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
-    ) -> StackMetadata:
+    ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(2).push(
             ValueSource(sources=(instruction,), value_type=bool)
-        )
+        ),
 
     def execute(self, frame: "Frame") -> None:
         right = frame.stack.pop()

@@ -660,3 +660,46 @@ def test_f_string_multiple_joined():
 
     assert_bytecode_for_args(f_string, "Hello", "World")
     assert_bytecode_for_args(f_string, "Goodbye", "World")
+
+
+def test_list_comprehension():
+    def list_comp(numbers):
+        x = 5
+        out = [x * 2 for x in numbers]
+        return x, out
+
+    assert_bytecode_for_args(list_comp, [])
+    assert_bytecode_for_args(list_comp, [1, 2, 3])
+
+
+def test_set_comprehension():
+    def set_comp(numbers):
+        x = 5
+        out = {x for x in numbers}
+        return x, out
+
+    assert_bytecode_for_args(set_comp, [])
+    assert_bytecode_for_args(set_comp, [1, 2, 3])
+    assert_bytecode_for_args(set_comp, [1, 2, 2])
+
+
+def test_dict_comprehension():
+    def dict_comp(numbers):
+        x = 5
+        out = {x: x**2 for x in numbers}
+        return x, out
+
+    assert_bytecode_for_args(dict_comp, [])
+    assert_bytecode_for_args(dict_comp, [1, 2, 3])
+    assert_bytecode_for_args(dict_comp, [1, 2, 2])
+
+
+def test_list_comprehension_multiple_generators():
+    def list_comp(xs, ys):
+        return [(x, y, x * y) for x in xs for y in ys]
+
+    assert_bytecode_for_args(list_comp, [], [])
+    assert_bytecode_for_args(list_comp, [], [1, 2, 3])
+    assert_bytecode_for_args(list_comp, [1, 2, 3], [])
+    assert_bytecode_for_args(list_comp, [1, 2, 3], [4, 5, 6])
+    assert_bytecode_for_args(list_comp, [1, 2], [3, 4, 5, 6])

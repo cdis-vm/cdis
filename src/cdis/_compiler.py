@@ -29,6 +29,13 @@ class AssignmentCode:
 
 
 @dataclass(frozen=True)
+class RenamedVariable:
+    read_opcode: opcode.Opcode
+    write_opcode: opcode.Opcode
+    delete_opcode: opcode.Opcode
+
+
+@dataclass(frozen=True)
 class Bytecode:
     function_name: str
     signature: inspect.Signature
@@ -70,7 +77,7 @@ class Bytecode:
             self, instructions=(), finally_blocks=(), signature=inspect.Signature()
         )
         new_bytecode = new_bytecode.with_statement_opcodes(
-            ast.Return(value=expression, lineno=0, col_offset=0)
+            ast.Return(value=expression, lineno=0, col_offset=0), {}
         )
         vm = CDisVM()
         return vm.run(new_bytecode)
@@ -206,27 +213,82 @@ class Bytecode:
                 operator = opcode.BinaryOperator[type(cmpop).__name__]
                 return self.add_op(opcode.BinaryOp(operator))
 
-    def with_generator_opcodes(
+    def with_comprehension_opcodes(
         self,
         generator: ast.comprehension,
-        generator_start: Label,
-        generator_end: Label,
-        accept_elt: Callable[["Bytecode"], "Bytecode"],
-    ) -> "Bytecode":
-        # TODO
-        raise NotImplementedError
+        iterator_next_label: Label,
+        iterator_exhausted_label: Label,
+        renames: dict[str, RenamedVariable],
+    ) -> tuple["Bytecode", dict[str, RenamedVariable],int]:
+        out = self.with_expression_opcodes(generator.iter, renames)
+        out = out.new_synthetic()
+        out = out.add_op(opcode.GetIterator())
+        out = out.add_op(opcode.StoreSynthetic(out.current_synthetic))
+        out = out.add_label(iterator_next_label)
+        out = out.add_op(opcode.LoadSynthetic(out.current_synthetic))
+        out = out.add_op(opcode.GetNextElseJumpTo(target=iterator_exhausted_label))
+        for condition in generator.ifs:
+            out = out.with_expression_opcodes(condition, renames)
+            out = out.add_op(opcode.IfFalse(target=iterator_next_label))
+        out, new_renames, used_variables_count = out._get_renames(generator.target, renames)
+        out = out.with_assignment_opcodes(generator.target, new_renames)
+        return out, new_renames, used_variables_count + 1
 
-    def with_expression_opcodes(self, expression: ast.expr) -> "Bytecode":
+    def _get_renames(self, target: ast.expr, renames: dict[str, RenamedVariable]) -> tuple['Bytecode', dict[str, RenamedVariable], int]:
+        match target:
+            case ast.Name(id=name):
+                out = self.new_synthetic()
+                renamed_variable = RenamedVariable(
+                    read_opcode=opcode.LoadSynthetic(out.current_synthetic),
+                    write_opcode=opcode.StoreSynthetic(out.current_synthetic),
+                    # TODO: is DeleteSynthetic needed?
+                    delete_opcode=opcode.Nop()
+                )
+                return out, { **renames, name: renamed_variable }, 1
+
+            case ast.Attribute(attr) as a:
+                return self, renames, 0
+
+            case ast.Subscript(value, slice=slice_, ctx=ctx):
+                return self, renames, 0
+
+            case ast.Starred(value=inner):
+                return self._get_renames(inner, renames)
+
+            case ast.List(elts, ctx):
+                return self._get_renames(ast.Tuple(elts=elts, ctx=ctx), renames)
+
+            case ast.Tuple(elts):
+                total_count = 0
+                new_renames = renames
+                new_bytecode = self
+                for elt in elts:
+                    new_bytecode, new_renames, added_count = new_bytecode._get_renames(elt, new_renames)
+                    total_count += added_count
+                return new_bytecode, new_renames, total_count
+
+            case _:
+                raise NotImplementedError(
+                    f"Not implemented assignment: {type(target)}"
+                )
+
+        raise RuntimeError(
+            f"Missing return in case {type(expression)} in get_assignment_code"
+        )
+
+    def with_expression_opcodes(self, expression: ast.expr, renames: dict[str, RenamedVariable]) -> "Bytecode":
         match expression:
             case ast.Constant(value):
                 return self.add_expression(expression, opcode.LoadConstant(value))
 
             case ast.Attribute(attr) as a:
-                out = self.with_expression_opcodes(a.value)
+                out = self.with_expression_opcodes(a.value, renames)
                 out = out.add_expression(expression, opcode.LoadAttr(attr.id))
                 return out
 
             case ast.Name(id=name, ctx=ast.Load()):
+                if name in renames:
+                    return self.add_expression(expression, renames[name].read_opcode)
                 if name in self.cell_names:
                     return self.add_expression(
                         expression, opcode.LoadCell(name, name in self.free_names)
@@ -237,7 +299,7 @@ class Bytecode:
                     return self.add_expression(expression, opcode.LoadGlobal(name))
 
             case ast.UnaryOp(op, operand):
-                out = self.with_expression_opcodes(operand)
+                out = self.with_expression_opcodes(operand, renames)
                 match operand:
                     case ast.Not():
                         return out.with_negated_tos()
@@ -248,18 +310,18 @@ class Bytecode:
                         )
 
             case ast.BinOp(left, op, right):
-                out = self.with_expression_opcodes(left)
-                out = out.with_expression_opcodes(right)
+                out = self.with_expression_opcodes(left, renames)
+                out = out.with_expression_opcodes(right, renames)
                 return out.add_expression(
                     expression,
                     opcode.BinaryOp(opcode.BinaryOperator[type(op).__name__]),
                 )
 
             case ast.Compare(left, ops, comparators):
-                out = self.with_expression_opcodes(left)
+                out = self.with_expression_opcodes(left, renames)
                 false_label = Label()
                 for i in range(len(ops) - 1):
-                    out = out.with_expression_opcodes(comparators[i])
+                    out = out.with_expression_opcodes(comparators[i], renames)
                     out = out.add_op(opcode.DupX1())
                     out = out.with_comparison_op(ops[i])
 
@@ -267,7 +329,7 @@ class Bytecode:
                         opcode.Dup(), opcode.IfFalse(false_label), opcode.Pop()
                     )
 
-                out = out.with_expression_opcodes(comparators[-1])
+                out = out.with_expression_opcodes(comparators[-1], renames)
                 out = out.with_comparison_op(ops[-1])
                 done_label = Label()
                 if len(ops) > 1:
@@ -290,26 +352,26 @@ class Bytecode:
                 out = self
                 end_label = Label()
                 for value in values[:-1]:
-                    out = out.with_expression_opcodes(value)
+                    out = out.with_expression_opcodes(value, renames)
                     out = out.add_op(opcode.Dup())
                     out = out.add_op(jump_opcode(end_label))
                     out = out.add_op(opcode.Pop())
-                out = out.with_expression_opcodes(values[-1])
+                out = out.with_expression_opcodes(values[-1], renames)
                 return out.add_label(end_label)
 
             case ast.Call(func, args, keywords):
-                out = self.with_expression_opcodes(func)
+                out = self.with_expression_opcodes(func, renames)
                 out = out.add_op(opcode.CreateCallBuilder())
                 extended = False
                 arg_index = 0
                 for arg in args:
                     match arg:
                         case ast.Starred(value):
-                            out = out.with_expression_opcodes(value)
+                            out = out.with_expression_opcodes(value, renames)
                             out = out.add_op(opcode.ExtendPositionalArgs())
                             extended = True
                         case _ as expression:
-                            out = out.with_expression_opcodes(expression)
+                            out = out.with_expression_opcodes(expression, renames)
                             if extended:
                                 out = out.add_op(opcode.AppendPositionalArg())
                             else:
@@ -317,7 +379,7 @@ class Bytecode:
                                 arg_index += 1
 
                 for kwarg in keywords:
-                    out = out.with_expression_opcodes(kwarg.value)
+                    out = out.with_expression_opcodes(kwarg.value, renames)
                     if kwarg.arg is None:
                         out = out.add_op(opcode.ExtendKeywordArgs())
                     else:
@@ -330,10 +392,10 @@ class Bytecode:
                 for elt in elts:
                     match elt:
                         case ast.Starred(value):
-                            out = out.with_expression_opcodes(value)
+                            out = out.with_expression_opcodes(value, renames)
                             out = out.add_op(opcode.ListExtend())
                         case _:
-                            out = out.with_expression_opcodes(elt)
+                            out = out.with_expression_opcodes(elt, renames)
                             out = out.add_op(opcode.ListAppend())
                 return out
 
@@ -342,10 +404,10 @@ class Bytecode:
                 for elt in elts:
                     match elt:
                         case ast.Starred(value):
-                            out = out.with_expression_opcodes(value)
+                            out = out.with_expression_opcodes(value, renames)
                             out = out.add_op(opcode.ListExtend())
                         case _:
-                            out = out.with_expression_opcodes(elt)
+                            out = out.with_expression_opcodes(elt, renames)
                             out = out.add_op(opcode.ListAppend())
                 out = out.add_op(opcode.ListToTuple())
                 return out
@@ -355,10 +417,10 @@ class Bytecode:
                 for elt in elts:
                     match elt:
                         case ast.Starred(value):
-                            out = out.with_expression_opcodes(value)
+                            out = out.with_expression_opcodes(value, renames)
                             out = out.add_op(opcode.SetUpdate())
                         case _:
-                            out = out.with_expression_opcodes(elt)
+                            out = out.with_expression_opcodes(elt, renames)
                             out = out.add_op(opcode.SetAdd())
                 return out
 
@@ -367,17 +429,17 @@ class Bytecode:
                 for index, value in enumerate(values):
                     key = keys[index]
                     if key is None:
-                        out = out.with_expression_opcodes(value)
+                        out = out.with_expression_opcodes(value, renames)
                         out = out.add_op(opcode.DictUpdate())
                     else:
-                        out = out.with_expression_opcodes(key)
-                        out = out.with_expression_opcodes(value)
+                        out = out.with_expression_opcodes(key, renames)
+                        out = out.with_expression_opcodes(value, renames)
                         out = out.add_op(opcode.DictPut())
                 return out
 
             case ast.Subscript(value, slice=slice_, ctx=ctx):
-                out = self.with_expression_opcodes(value)
-                out = out.with_expression_opcodes(slice_)
+                out = self.with_expression_opcodes(value, renames)
+                out = out.with_expression_opcodes(slice_, renames)
                 match ctx:
                     case ast.Load():
                         out = out.add_op(opcode.GetItem())
@@ -390,7 +452,7 @@ class Bytecode:
                 return out
 
             case ast.FormattedValue(value, conversion, format_spec):
-                out = self.with_expression_opcodes(value)
+                out = self.with_expression_opcodes(value, renames)
                 out = out.add_op(
                     opcode.FormatValue(
                         conversion=opcode.FormatConversion.from_int(conversion),
@@ -405,8 +467,68 @@ class Bytecode:
             case ast.JoinedStr(values):
                 out = self
                 for value in values:
-                    out = out.with_expression_opcodes(value)
+                    out = out.with_expression_opcodes(value, renames)
                 out = out.add_op(opcode.JoinStringValues(count=len(values)))
+                return out
+
+            # TODO: ast.GeneratorExp
+
+            case ast.ListComp(elt, generators):
+                out = self.add_op(opcode.NewList())
+                out = out.new_synthetic()
+                list_variable_index = out.current_synthetic
+                out = out.add_op(opcode.StoreSynthetic(list_variable_index))
+
+                def add_to_list(new_bytecode: "Bytecode") -> "Bytecode":
+                    new_bytecode = new_bytecode.add_op(opcode.LoadSynthetic(list_variable_index))
+                    new_bytecode = new_bytecode.add_op(opcode.Swap())
+                    new_bytecode = new_bytecode.add_op(opcode.ListAppend())
+                    new_bytecode = new_bytecode.add_op(opcode.Pop())
+                    return new_bytecode
+
+                out = out.get_comprehension_code(add_to_list, (elt,), generators, renames)
+                out = out.add_op(opcode.LoadSynthetic(list_variable_index))
+                out = out.free_synthetic()
+                return out
+
+            case ast.SetComp(elt, generators):
+                out = self.add_op(opcode.NewSet())
+                out = out.new_synthetic()
+                set_variable_index = out.current_synthetic
+                out = out.add_op(opcode.StoreSynthetic(set_variable_index))
+
+                def add_to_set(new_bytecode: "Bytecode") -> "Bytecode":
+                    new_bytecode = new_bytecode.add_op(opcode.LoadSynthetic(set_variable_index))
+                    new_bytecode = new_bytecode.add_op(opcode.Swap())
+                    new_bytecode = new_bytecode.add_op(opcode.SetAdd())
+                    new_bytecode = new_bytecode.add_op(opcode.Pop())
+                    return new_bytecode
+
+                out = out.get_comprehension_code(add_to_set, (elt,), generators, renames)
+                out = out.add_op(opcode.LoadSynthetic(set_variable_index))
+                out = out.free_synthetic()
+                return out
+
+            case ast.DictComp(key, value, generators):
+                out = self.add_op(opcode.NewDict())
+                out = out.new_synthetic()
+                dict_variable_index = out.current_synthetic
+                out = out.add_op(opcode.StoreSynthetic(dict_variable_index))
+
+                def add_to_set(new_bytecode: "Bytecode") -> "Bytecode":
+                    new_bytecode = new_bytecode.new_synthetic()
+                    new_bytecode = new_bytecode.add_op(opcode.StoreSynthetic(new_bytecode.current_synthetic))
+                    new_bytecode = new_bytecode.add_op(opcode.LoadSynthetic(dict_variable_index))
+                    new_bytecode = new_bytecode.add_op(opcode.Swap())
+                    new_bytecode = new_bytecode.add_op(opcode.LoadSynthetic(new_bytecode.current_synthetic))
+                    new_bytecode = new_bytecode.add_op(opcode.DictPut())
+                    new_bytecode = new_bytecode.add_op(opcode.Pop())
+                    new_bytecode = new_bytecode.free_synthetic()
+                    return new_bytecode
+
+                out = out.get_comprehension_code(add_to_set, (key, value), generators, renames)
+                out = out.add_op(opcode.LoadSynthetic(dict_variable_index))
+                out = out.free_synthetic()
                 return out
 
             case _:
@@ -418,10 +540,56 @@ class Bytecode:
             f"Missing return in case {type(expression)} in with_expression_opcodes"
         )
 
-    def get_assignment_code(self, expression: ast.expr) -> AssignmentCode:
+    def get_comprehension_code(self,
+                               elt_consumer: Callable[["Bytecode"], "Bytecode"],
+                               elts: tuple[ast.expr, ...],
+                               generators: list[ast.comprehension],
+                               renames: dict[str, RenamedVariable]):
+        end_label = Label()
+        used_variables_count = 0
+        previous_generator_next_label = Label()
+        out, new_renames, new_variables = self.with_comprehension_opcodes(generators[0],
+                                                                          previous_generator_next_label,
+                                                                          end_label,
+                                                                          renames)
+        used_variables_count += new_variables
+        for generator in generators[1:]:
+            new_generator_next_label = Label()
+            out, new_renames, new_variables = out.with_comprehension_opcodes(generator,
+                                                                             new_generator_next_label,
+                                                                             previous_generator_next_label,
+                                                                             new_renames)
+            used_variables_count += new_variables
+            previous_generator_next_label = new_generator_next_label
+
+        for elt in elts:
+            out = out.with_expression_opcodes(elt, new_renames)
+
+        out = elt_consumer(out)
+        out = out.add_op(opcode.JumpTo(target=previous_generator_next_label))
+        out = out.add_label(end_label)
+        for used_variable in range(used_variables_count):
+            out = out.free_synthetic()
+        return out
+
+    def get_assignment_code(self, expression: ast.expr, renames: dict[str, RenamedVariable]) -> AssignmentCode:
         match expression:
             case ast.Name(id=name):
-                if name in self.cell_names:
+                if name in renames:
+                    return AssignmentCode(
+                        stack_items=0,
+                        load_target=lambda b: b,
+                        load_current_value=lambda b: b.add_expression(
+                            expression, renames[name].read_opcode
+                        ),
+                        store_value=lambda b: b.add_expression(
+                            expression, renames[name].write_opcode
+                        ),
+                        delete_value=lambda b: b.add_expression(
+                            expression, renames[name].delete_opcode
+                        ),
+                    )
+                elif name in self.cell_names:
                     return AssignmentCode(
                         stack_items=0,
                         load_target=lambda b: b,
@@ -467,7 +635,7 @@ class Bytecode:
             case ast.Attribute(attr) as a:
                 return AssignmentCode(
                     stack_items=1,
-                    load_target=lambda b: b.with_expression_opcodes(a.value),
+                    load_target=lambda b: b.with_expression_opcodes(a.value, renames),
                     load_current_value=lambda b: b.add_expression(
                         expression, opcode.LoadAttr(attr.id)
                     ),
@@ -483,18 +651,18 @@ class Bytecode:
                 return AssignmentCode(
                     stack_items=2,
                     load_target=lambda b: b.with_expression_opcodes(
-                        value
-                    ).with_expression_opcodes(slice_),
+                        value, renames
+                    ).with_expression_opcodes(slice_, renames),
                     load_current_value=lambda b: b.add_op(opcode.GetItem()),
                     store_value=lambda b: b.add_op(opcode.SetItem()),
                     delete_value=lambda b: b.add_op(opcode.DeleteItem()),
                 )
 
             case ast.Starred(value=inner):
-                return self.get_assignment_code(inner)
+                return self.get_assignment_code(inner, renames)
 
             case ast.List(elts, ctx):
-                return self.get_assignment_code(ast.Tuple(elts=elts, ctx=ctx))
+                return self.get_assignment_code(ast.Tuple(elts=elts, ctx=ctx), renames)
 
             case ast.Tuple(elts):
 
@@ -519,7 +687,7 @@ class Bytecode:
                         )
                     )
                     for elt in elts:
-                        assignment_code = bytecode.get_assignment_code(elt)
+                        assignment_code = bytecode.get_assignment_code(elt, renames)
                         bytecode = assignment_code.load_target(bytecode)
                         bytecode = assignment_code.store_value(bytecode)
 
@@ -527,7 +695,7 @@ class Bytecode:
 
                 def delete_elts(bytecode: "Bytecode") -> "Bytecode":
                     for elt in elts:
-                        assignment_code = bytecode.get_assignment_code(elt)
+                        assignment_code = bytecode.get_assignment_code(elt, renames)
                         bytecode = assignment_code.load_target(bytecode)
                         bytecode = assignment_code.delete_value(bytecode)
                     return bytecode
@@ -551,11 +719,11 @@ class Bytecode:
             f"Missing return in case {type(expression)} in get_assignment_code"
         )
 
-    def with_assignment_opcodes(self, expression: ast.expr) -> "Bytecode":
-        assignment_code = self.get_assignment_code(expression)
+    def with_assignment_opcodes(self, expression: ast.expr, renames: dict[str, RenamedVariable]) -> "Bytecode":
+        assignment_code = self.get_assignment_code(expression, renames)
         return assignment_code.store_value(assignment_code.load_target(self))
 
-    def with_statement_opcodes(self, statement: ast.stmt) -> "Bytecode":
+    def with_statement_opcodes(self, statement: ast.stmt, renames: dict[str, RenamedVariable]) -> "Bytecode":
         match statement:
             case ast.Pass():
                 return self.add_statement(statement, opcode.Nop())
@@ -573,16 +741,16 @@ class Bytecode:
                 return out
 
             case ast.Expr(value):
-                out = self.with_expression_opcodes(value)
+                out = self.with_expression_opcodes(value, renames)
                 out = out.add_op(opcode.Pop())
                 return out
 
             case ast.Return(value):
                 if value is not None:
-                    out = self.with_expression_opcodes(value)
+                    out = self.with_expression_opcodes(value, renames)
                 else:
                     out = self.with_expression_opcodes(
-                        ast.Constant(None, lineno=statement.lineno)
+                        ast.Constant(None, lineno=statement.lineno), renames
                     )
 
                 if len(out.finally_blocks) == 0:
@@ -598,7 +766,7 @@ class Bytecode:
                     block = finally_blocks[i]
                     out = replace(out, finally_blocks=finally_blocks[:i])
                     for statement in block:
-                        out = out.with_statement_opcodes(statement)
+                        out = out.with_statement_opcodes(statement, renames)
 
                 out = replace(out, finally_blocks=finally_blocks)
                 out = out.add_op(opcode.LoadSynthetic(return_value_holder))
@@ -608,10 +776,10 @@ class Bytecode:
             case ast.Raise(exc, cause):
                 if exc is None:
                     return self.add_op(opcode.ReraiseLast())
-                out = self.with_expression_opcodes(exc)
+                out = self.with_expression_opcodes(exc, renames)
                 if cause is None:
                     return out.add_op(opcode.Raise())
-                out = out.with_expression_opcodes(cause)
+                out = out.with_expression_opcodes(cause, renames)
                 return out.add_op(opcode.RaiseWithCause())
 
             case ast.Try(body, handlers, orelse, finalbody):
@@ -623,11 +791,11 @@ class Bytecode:
                 out = self.add_label(try_start)
                 out = out.push_finally_block(finalbody)
                 for statement in body:
-                    out = out.with_statement_opcodes(statement)
+                    out = out.with_statement_opcodes(statement, renames)
                 out = out.add_label(try_end)
 
                 for statement in orelse:
-                    out = out.with_statement_opcodes(statement)
+                    out = out.with_statement_opcodes(statement, renames)
 
                 out = out.add_op(opcode.JumpTo(try_finally))
 
@@ -646,7 +814,7 @@ class Bytecode:
                         out = out.add_op(opcode.Pop())
 
                     for statement in except_handler.body:
-                        out = out.with_statement_opcodes(statement)
+                        out = out.with_statement_opcodes(statement, renames)
 
                     out = out.add_label(handler_end)
                     out = out.add_op(opcode.JumpTo(try_finally))
@@ -673,27 +841,27 @@ class Bytecode:
                 )
 
                 for statement in finalbody:
-                    out = out.with_statement_opcodes(statement)
+                    out = out.with_statement_opcodes(statement, renames)
 
                 out = out.add_op(opcode.ReraiseLast())
 
                 out = out.add_label(try_finally)
 
                 for statement in finalbody:
-                    out = out.with_statement_opcodes(statement)
+                    out = out.with_statement_opcodes(statement, renames)
 
                 return out
 
             case ast.Assign(targets, value):
-                out = self.with_expression_opcodes(value)
+                out = self.with_expression_opcodes(value, renames)
                 for target in targets[:-1]:
                     out = out.add_op(opcode.Dup())
-                    out = out.with_assignment_opcodes(target)
-                out = out.with_assignment_opcodes(targets[-1])
+                    out = out.with_assignment_opcodes(target, renames)
+                out = out.with_assignment_opcodes(targets[-1], renames)
                 return out
 
             case ast.AugAssign(target, op, value):
-                assignment_code = self.get_assignment_code(target)
+                assignment_code = self.get_assignment_code(target, renames)
                 out = assignment_code.load_target(self)
                 stack_items = []
 
@@ -706,7 +874,7 @@ class Bytecode:
                     out = out.add_ops(opcode.LoadSynthetic(stack_items[i]))
 
                 out = assignment_code.load_current_value(out)
-                out = out.with_expression_opcodes(value)
+                out = out.with_expression_opcodes(value, renames)
                 out = out.add_op(
                     opcode.BinaryOp(opcode.BinaryOperator["I" + type(op).__name__])
                 )
@@ -721,7 +889,7 @@ class Bytecode:
             case ast.Delete(targets):
                 out = self
                 for target in targets:
-                    assignment_code = out.get_assignment_code(target)
+                    assignment_code = out.get_assignment_code(target, renames)
                     out = assignment_code.load_target(out)
                     out = assignment_code.delete_value(out)
                 return out
@@ -729,17 +897,17 @@ class Bytecode:
             case ast.If(test, body, orelse):
                 false_label = Label()
                 done_label = Label()
-                out = self.with_expression_opcodes(test)
+                out = self.with_expression_opcodes(test, renames)
                 out = out.add_op(opcode.IfFalse(false_label))
 
                 for body_statement in body:
-                    out = out.with_statement_opcodes(body_statement)
+                    out = out.with_statement_opcodes(body_statement, renames)
 
                 out = out.add_op(opcode.JumpTo(done_label))
                 out = out.add_label(false_label)
 
                 for else_statement in orelse:
-                    out = out.with_statement_opcodes(else_statement)
+                    out = out.with_statement_opcodes(else_statement, renames)
 
                 out = out.add_label(done_label)
                 return out
@@ -755,7 +923,7 @@ class Bytecode:
                 false_label = Label()
                 break_label = Label()
                 out = self.add_label(test_label)
-                out = out.with_expression_opcodes(test)
+                out = out.with_expression_opcodes(test, renames)
 
                 out = out.add_op(opcode.IfFalse(false_label))
 
@@ -763,7 +931,7 @@ class Bytecode:
                 out = out.push_break_label(break_label)
 
                 for body_statement in body:
-                    out = out.with_statement_opcodes(body_statement)
+                    out = out.with_statement_opcodes(body_statement, renames)
 
                 out = out.pop_continue_label()
                 out = out.pop_break_label()
@@ -772,7 +940,7 @@ class Bytecode:
                 out = out.add_label(false_label)
 
                 for else_statement in orelse:
-                    out = out.with_statement_opcodes(else_statement)
+                    out = out.with_statement_opcodes(else_statement, renames)
 
                 out = out.add_label(break_label)
                 return out
@@ -784,28 +952,20 @@ class Bytecode:
                 got_next_label = Label()
                 iterator_exhausted_label = Label()
                 break_label = Label()
-                out = out.with_expression_opcodes(iter)
+                out = out.with_expression_opcodes(iter, renames)
                 out = out.add_op(opcode.GetIterator())
                 out = out.add_op(opcode.StoreSynthetic(iterator_synthetic))
                 out = out.add_label(next_label)
                 out = out.add_op(opcode.LoadSynthetic(iterator_synthetic))
-                out = out.add_op(opcode.TryNext())
-                out = out.with_assignment_opcodes(target)
+                out = out.add_op(opcode.GetNextElseJumpTo(target=iterator_exhausted_label))
+                out = out.with_assignment_opcodes(target, renames)
                 out = out.add_label(got_next_label)
-                out = out.add_exception_handler(
-                    ExceptionHandler(
-                        exception_class=StopIteration,
-                        from_label=next_label,
-                        to_label=got_next_label,
-                        handler_label=iterator_exhausted_label,
-                    )
-                )
 
                 out = out.push_continue_label(next_label)
                 out = out.push_break_label(break_label)
 
                 for body_statement in body:
-                    out = out.with_statement_opcodes(body_statement)
+                    out = out.with_statement_opcodes(body_statement, renames)
 
                 out = out.pop_continue_label()
                 out = out.pop_break_label()
@@ -814,7 +974,7 @@ class Bytecode:
                 out = out.add_label(iterator_exhausted_label)
 
                 for else_statement in orelse:
-                    out = out.with_statement_opcodes(else_statement)
+                    out = out.with_statement_opcodes(else_statement, renames)
 
                 out = out.add_label(break_label)
                 return out
@@ -867,8 +1027,13 @@ def to_bytecode(function: FunctionType) -> Bytecode:
         closure=closure_dict,
     )
 
+    for parameter_cell_var in cell_names & {name for name in function.__code__.co_varnames[:function.__code__.co_argcount]}:
+        bytecode = bytecode.add_op(opcode.LoadLocal(name=parameter_cell_var))
+        bytecode = bytecode.add_op(opcode.StoreCell(name=parameter_cell_var, is_free=False))
+        closure_dict[parameter_cell_var] = CellType()
+
     for statement in function_ast.body:
-        bytecode = bytecode.with_statement_opcodes(statement)
+        bytecode = bytecode.with_statement_opcodes(statement, {})
 
     bytecode = bytecode.with_statement_opcodes(
         ast.Return(
@@ -878,5 +1043,5 @@ def to_bytecode(function: FunctionType) -> Bytecode:
             ),
             lineno=function_ast.body[-1].lineno,
         )
-    )
+    , {})
     return bytecode
