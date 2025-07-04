@@ -703,3 +703,26 @@ def test_list_comprehension_multiple_generators():
     assert_bytecode_for_args(list_comp, [1, 2, 3], [])
     assert_bytecode_for_args(list_comp, [1, 2, 3], [4, 5, 6])
     assert_bytecode_for_args(list_comp, [1, 2], [3, 4, 5, 6])
+
+
+def test_inner_function():
+    def outer_function(x):
+        def inner_function(y):
+            return x + y
+        return inner_function(x * 2)
+
+    assert_bytecode_for_args(outer_function, 1)
+    assert_bytecode_for_args(outer_function, 2)
+    assert_bytecode_for_args(outer_function, 3)
+
+
+def test_inner_function_with_defaults():
+    def outer_function(x):
+        def inner_function(y=x*2):
+            return x + y
+        x = 10
+        return inner_function()
+
+    assert_bytecode_for_args(outer_function, 1)
+    assert_bytecode_for_args(outer_function, 2)
+    assert_bytecode_for_args(outer_function, 3)

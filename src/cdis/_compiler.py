@@ -1,4 +1,4 @@
-from ._bytecode import Instruction, Label
+from ._bytecode import Instruction, Label, InnerFunction
 from cdis import bytecode as opcode
 from dataclasses import dataclass, replace, field
 from types import FunctionType, CellType
@@ -979,6 +979,19 @@ class Bytecode:
                 out = out.add_label(break_label)
                 return out
 
+            case ast.FunctionDef() as func_def:
+                inner_function = self._create_inner_function(func_def)
+                out = self
+                for default_arg in func_def.args.defaults:
+                    out = out.with_expression_opcodes(default_arg, renames)
+                for default_arg in func_def.args.kw_defaults:
+                    out = out.with_expression_opcodes(default_arg, renames)
+                out = out.add_op(opcode.LoadAndBindInnerFunction(inner_function))
+                for decorator in func_def.decorator_list:
+                    pass  # TODO
+                out = out.with_assignment_opcodes(ast.Name(id=func_def.name, ctx=ast.Store), renames)
+                return out
+
             case _:
                 raise NotImplementedError(
                     f"Not implemented statement: {type(statement)}"
@@ -987,6 +1000,137 @@ class Bytecode:
         raise RuntimeError(
             f"Missing return in case {type(statement)} in with_statement_opcodes"
         )
+
+    def _create_inner_function(self, func_def: ast.FunctionDef) -> InnerFunction:
+        parameters = []
+        parameters_with_defaults = []
+        for param in func_def.args.args:
+            parameters.append(inspect.Parameter(
+                name=param.arg,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=param.annotation,
+            ))
+        for param in func_def.args.posonlyargs:
+            parameters.append(inspect.Parameter(
+                name=param.arg,
+                kind=inspect.Parameter.POSITIONAL_ONLY,
+                annotation=param.annotation,
+            ))
+        if func_def.args.vararg:
+            parameters.append(inspect.Parameter(
+                name=func_def.args.vararg.arg,
+                kind=inspect.Parameter.VAR_POSITIONAL,
+                annotation=func_def.args.vararg.annotation,
+            ))
+        for param in func_def.args.kwonlyargs:
+            parameters.append(inspect.Parameter(
+                name=param.arg,
+                kind=inspect.Parameter.KEYWORD_ONLY,
+                annotation=param.annotation,
+            ))
+        if func_def.args.kwarg:
+            parameters.append(inspect.Parameter(
+                name=func_def.args.vararg.arg,
+                kind=inspect.Parameter.VAR_KEYWORD,
+                annotation=func_def.args.vararg.annotation,
+            ))
+        signature = inspect.Signature(parameters)
+        remaining_pos_only = len(func_def.args.posonlyargs)
+        remaining_pos_or_kw = len(func_def.args.args)
+        for i in range(len(func_def.args.defaults)):
+            if remaining_pos_only > 0:
+                parameters_with_defaults.append(func_def.args.posonlyargs[remaining_pos_only - 1].arg)
+                remaining_pos_only -= 1
+            else:
+                parameters_with_defaults.append(func_def.args.args[remaining_pos_or_kw - 1].arg)
+                remaining_pos_or_kw -= 1
+
+        for i in range(len(func_def.args.kw_defaults)):
+            if func_def.args.kw_defaults[i] is not None:
+                parameters_with_defaults.append(func_def.args.kwonlyargs[i].arg)
+
+        used_variables = find_used_variables(func_def, self.local_names | self.cell_names | self.free_names)
+        free_name_set = self.cell_names & used_variables.variable_names
+        closure = (CellType(),) * len(free_name_set)
+        inner_bytecode = ast_to_bytecode(func_def, signature, self.globals,
+                                         closure,
+                                         tuple(free_name_set),
+                                         tuple(used_variables.cell_names),
+                                         tuple(used_variables.variable_names)
+                                         )
+        return InnerFunction(bytecode=inner_bytecode,
+                             parameters_with_defaults=tuple(parameters_with_defaults))
+
+
+@dataclass(frozen=True)
+class UsedVariables:
+    variable_names: frozenset[str]
+    cell_names: frozenset[str]
+
+
+def find_used_variables(func_def: ast.FunctionDef, outer_variables: frozenset[str]) -> UsedVariables:
+    variable_names = set()
+    cell_names = set()
+    def add_names_to_variable_names(assignment_target):
+        match assignment_target:
+            case ast.Name(id=name):
+                variable_names.add(name)
+                if name in outer_variables:
+                    cell_names.add(name)
+
+            case ast.Attribute() as a:
+                pass
+
+            case ast.Subscript():
+                pass
+
+            case ast.Starred(value=inner):
+                add_names_to_variable_names(inner)
+
+            case ast.List(elts):
+                for list_item in elts:
+                    add_names_to_variable_names(list_item)
+
+            case ast.Tuple(elts):
+                for list_item in elts:
+                    add_names_to_variable_names(list_item)
+
+            case _:
+                raise NotImplementedError(
+                    f"Not implemented assignment: {type(assignment_target)}"
+                )
+
+    def iterate_node(node):
+        for child in ast.iter_child_nodes(node):
+            match child:
+                case ast.Assign(targets):
+                    for target in targets:
+                        add_names_to_variable_names(target)
+
+                case ast.Name(id=name):
+                    if name in outer_variables:
+                        variable_names.add(name)
+                        cell_names.add(name)
+
+                case _:
+                    iterate_node(child)
+
+    for statement in func_def.body:
+        iterate_node(statement)
+
+    for arg in func_def.args.args:
+        variable_names.add(arg.arg)
+    for arg in func_def.args.posonlyargs:
+        variable_names.add(arg.arg)
+    for arg in func_def.args.kwonlyargs:
+        variable_names.add(arg.arg)
+    if func_def.args.vararg is not None:
+        variable_names.add(func_def.args.vararg.arg)
+    if func_def.args.kwarg is not None:
+        variable_names.add(func_def.args.kwarg.arg)
+
+    return UsedVariables(variable_names=frozenset(variable_names),
+                         cell_names=frozenset(cell_names))
 
 
 def unindent(code: str) -> str:
@@ -1009,25 +1153,39 @@ def to_bytecode(function: FunctionType) -> Bytecode:
     source = unindent(source)
     function_ast: ast.FunctionDef = cast(ast.FunctionDef, ast.parse(source).body[0])
 
-    free_vars = function.__code__.co_freevars
-    cell_names = frozenset(function.__code__.co_cellvars + free_vars)
-    local_names = frozenset(set(function.__code__.co_varnames) - set(cell_names))
+    return ast_to_bytecode(function_ast, inspect.signature(function),
+                           function.__globals__, function.__closure__,
+                           function.__code__.co_freevars, function.__code__.co_cellvars,
+                           function.__code__.co_varnames)
+
+
+def ast_to_bytecode(function_ast: ast.FunctionDef,
+                    signature: inspect.Signature,
+                    function_globals: dict[str, object],
+                    function_closure: tuple[CellType, ...],
+                    free_names: tuple[str, ...],
+                    cell_names: tuple[str, ...],
+                    variable_names: tuple[str, ...]) -> Bytecode:
+    free_vars = free_names
+    cell_names = frozenset(cell_names + free_vars)
+    local_names = frozenset(set(variable_names) - set(cell_names))
 
     closure_dict = {}
     for i in range(len(free_vars)):
-        closure_dict[free_vars[i]] = function.__closure__[i]
+        closure_dict[free_vars[i]] = function_closure[i]
 
     bytecode = Bytecode(
-        function_name=function.__name__,
-        signature=inspect.signature(function),
+        function_name=function_ast.name,
+        signature=signature,
         local_names=local_names,
         cell_names=cell_names,
-        free_names=frozenset(function.__code__.co_freevars),
-        globals=function.__globals__,
+        free_names=frozenset(free_vars),
+        globals=function_globals,
         closure=closure_dict,
     )
 
-    for parameter_cell_var in cell_names & {name for name in function.__code__.co_varnames[:function.__code__.co_argcount]}:
+    parameter_cells = (cell_names - frozenset(free_names)) & {name for name in variable_names[:len(signature.parameters)]}
+    for parameter_cell_var in parameter_cells:
         bytecode = bytecode.add_op(opcode.LoadLocal(name=parameter_cell_var))
         bytecode = bytecode.add_op(opcode.StoreCell(name=parameter_cell_var, is_free=False))
         closure_dict[parameter_cell_var] = CellType()

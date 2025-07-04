@@ -1,13 +1,15 @@
 from collections.abc import Callable
 from dataclasses import dataclass, replace, field
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Iterator, Any
+from inspect import Signature, Parameter
+from typing import TYPE_CHECKING, Iterator, Any, Union
 from enum import Enum
 import ast
 import operator
 
+
 if TYPE_CHECKING:
-    from ._vm import Frame
+    from ._vm import Frame, CDisVM
     from ._compiler import Bytecode
 
 
@@ -363,6 +365,56 @@ class StackMetadata:
             )
 
 
+@dataclass(frozen=True)
+class InnerFunction:
+    """Represents a function defined inside another function.
+
+    """
+    bytecode: 'Bytecode'
+    parameters_with_defaults: tuple[str, ...]
+
+    @property
+    def name(self) -> str:
+        """The name of the function; possibly empty for lambdas."""
+        return self.bytecode.function_name
+
+    @property
+    def signature(self) -> Signature:
+        """The signature of the function."""
+        return self.bytecode.signature
+
+    @property
+    def free_vars(self) -> frozenset[str]:
+        """The free variables that must be bound before the function can be called."""
+        return self.bytecode.free_names
+
+    def bind(self, frame: 'Frame', *default_values) -> 'Bytecode':
+        """Binds this inner function to the given frame."""
+        if len(default_values) != len(self.parameters_with_defaults):
+            raise ValueError(f'Expected {len(self.parameters_with_defaults)} default values, got {len(default_values)}.')
+        new_closure = {}
+        for free_var in self.free_vars:
+            new_closure[free_var] = frame.closure[free_var]
+
+        original_signature = self.signature
+        new_parameters = []
+        for parameter_name, parameter in original_signature.parameters.items():
+            if parameter_name in self.parameters_with_defaults:
+                index = self.parameters_with_defaults.index(parameter_name)
+                new_parameters.append(Parameter(
+                    name=parameter_name,
+                    kind=parameter.kind,
+                    default=default_values[index],
+                    annotation=parameter.annotation
+                ))
+            else:
+                new_parameters.append(parameter)
+
+        new_signature = original_signature.replace(parameters=new_parameters)
+        return replace(self.bytecode, signature=new_signature, closure=new_closure)
+
+
+
 class Opcode(ABC):
     """Represent a bytecode operation.
 
@@ -681,6 +733,36 @@ class LoadSynthetic(Opcode):
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append(frame.synthetic_variables[self.index])
+
+
+@dataclass(frozen=True)
+class LoadAndBindInnerFunction(Opcode):
+    """Loads and binds an inner function.
+    The inner function's default values are expected to be on the stack
+    in the order given by `inner_function.parameters_with_defaults`
+
+    Notes
+    -----
+        | LoadAndBindInnerFunction
+        | Stack Effect: 1 - len(inner_function.parameters_with_defaults)
+        | Prior: ..., default1, default2, ..., defaultN
+        | After: ..., bound_inner_function
+
+    """
+    inner_function: InnerFunction
+
+    def next_stack_metadata(self, instruction: "Instruction", bytecode: "Bytecode",
+                            previous_stack_metadata: StackMetadata) -> tuple[StackMetadata, ...]:
+        return (previous_stack_metadata
+                .pop(len(self.inner_function.parameters_with_defaults))
+                .push(ValueSource((instruction,), object)  # TODO: Typing
+        ),)
+
+    def execute(self, frame: "Frame") -> None:
+        default_parameters = self.inner_function.parameters_with_defaults
+        default_parameters_values = frame.stack[len(frame.stack) - len(default_parameters):]
+        frame.stack[len(frame.stack) - len(default_parameters):] = []
+        frame.stack.append(self.inner_function.bind(frame, *default_parameters_values))
 
 
 @dataclass(frozen=True)
@@ -1996,12 +2078,20 @@ class JoinStringValues(Opcode):
 class PreparedCall:
     """Stores a function and its arguments; mutated by opcodes."""
 
-    func: Callable
+    func: Union[Callable, 'Bytecode']
     args: tuple[object, ...] = ()
     kwargs: dict[str, object] = field(default_factory=dict)
 
-    def invoke(self):
-        return self.func(*self.args, **self.kwargs)
+    def invoke(self, vm: 'CDisVM'):
+        from ._compiler import Bytecode
+        from ._vm import Frame
+        if isinstance(self.func, Bytecode):
+            new_frame = Frame.new_frame(vm)
+            new_frame.bind_bytecode_to_frame(self.func, *self.args, **self.kwargs)
+            vm.frames.append(new_frame)
+            return self.func
+        else:
+            return self.func(*self.args, **self.kwargs)
 
 
 @dataclass(frozen=True)
@@ -2265,8 +2355,19 @@ class CallWithBuilder(Opcode):
         ),
 
     def execute(self, frame: "Frame") -> None:
+        vm = frame.vm
         prepared_call = frame.stack.pop()
-        frame.stack.append(prepared_call.invoke())
+        old_frame_size = len(vm.frames)
+        result = prepared_call.invoke(vm)
+        if old_frame_size == len(vm.frames):
+            # PreparedCall was for Callable/C Function
+            frame.stack.append(result)
+        else:
+            # PreparedCall was for Bytecode
+            while old_frame_size != len(vm.frames):
+                vm.step(result)
+            #  ReturnValue of the last frame appended the result to our frame's stack
+
 
 
 ########################################
