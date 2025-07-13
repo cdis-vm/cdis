@@ -144,6 +144,16 @@ def test_attr_inplace_add():
     assert_bytecode_for_args(attr_assignment, 20)
 
 
+def test_assignment_expr():
+    def attr_assignment(value):
+        y = (x := value)
+        y = y * y
+        return y // x
+
+    assert_bytecode_for_args(attr_assignment, 10)
+    assert_bytecode_for_args(attr_assignment, 20)
+
+
 def test_add():
     def add(a, b):
         return a + b

@@ -298,6 +298,12 @@ class Bytecode:
                 else:
                     return self.add_expression(expression, opcode.LoadGlobal(name))
 
+            case ast.NamedExpr(target, value):
+                out = self.with_expression_opcodes(value, renames)
+                out = out.add_op(opcode.Dup())
+                return out.with_assignment_opcodes(target,
+                                                   renames)
+
             case ast.UnaryOp(op, operand):
                 out = self.with_expression_opcodes(operand, renames)
                 match operand:
