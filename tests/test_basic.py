@@ -243,6 +243,17 @@ def test_if():
     assert_bytecode_for_args(if_, 8)
 
 
+def test_if_expr():
+    def if_(value):
+        return -value if value < 5 else value
+
+    assert_bytecode_for_args(if_, 1)
+    assert_bytecode_for_args(if_, 3)
+    assert_bytecode_for_args(if_, 5)
+    assert_bytecode_for_args(if_, 6)
+    assert_bytecode_for_args(if_, 8)
+
+
 def test_while():
     def power(base, exponent):
         out = 1

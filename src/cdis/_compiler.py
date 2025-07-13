@@ -541,6 +541,19 @@ class Bytecode:
                 out = out.add_op(opcode.LoadAndBindInnerFunction(inner_function))
                 return out
 
+            case ast.IfExp(test, body, orelse):
+                end_label = opcode.Label()
+                orelse_label = opcode.Label()
+                out = self
+                out = out.with_expression_opcodes(test, renames)
+                out = out.add_op(opcode.IfFalse(target=orelse_label))
+                out = out.with_expression_opcodes(body, renames)
+                out = out.add_op(opcode.JumpTo(target=end_label))
+                out = out.add_label(orelse_label)
+                out = out.with_expression_opcodes(orelse, renames)
+                out = out.add_label(end_label)
+                return out
+
             case _:
                 raise NotImplementedError(
                     f"Not implemented statement: {type(expression)}"
