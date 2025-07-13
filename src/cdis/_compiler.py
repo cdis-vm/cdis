@@ -531,6 +531,16 @@ class Bytecode:
                 out = out.free_synthetic()
                 return out
 
+            case ast.Lambda(args):
+                inner_function = self._create_lambda(expression)
+                out = self
+                for default_arg in args.defaults:
+                    out = out.with_expression_opcodes(default_arg, renames)
+                for default_arg in args.kw_defaults:
+                    out = out.with_expression_opcodes(default_arg, renames)
+                out = out.add_op(opcode.LoadAndBindInnerFunction(inner_function))
+                return out
+
             case _:
                 raise NotImplementedError(
                     f"Not implemented statement: {type(expression)}"
@@ -1002,64 +1012,33 @@ class Bytecode:
         )
 
     def _create_inner_function(self, func_def: ast.FunctionDef) -> InnerFunction:
-        parameters = []
-        parameters_with_defaults = []
-        for param in func_def.args.args:
-            parameters.append(inspect.Parameter(
-                name=param.arg,
-                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=param.annotation,
-            ))
-        for param in func_def.args.posonlyargs:
-            parameters.append(inspect.Parameter(
-                name=param.arg,
-                kind=inspect.Parameter.POSITIONAL_ONLY,
-                annotation=param.annotation,
-            ))
-        if func_def.args.vararg:
-            parameters.append(inspect.Parameter(
-                name=func_def.args.vararg.arg,
-                kind=inspect.Parameter.VAR_POSITIONAL,
-                annotation=func_def.args.vararg.annotation,
-            ))
-        for param in func_def.args.kwonlyargs:
-            parameters.append(inspect.Parameter(
-                name=param.arg,
-                kind=inspect.Parameter.KEYWORD_ONLY,
-                annotation=param.annotation,
-            ))
-        if func_def.args.kwarg:
-            parameters.append(inspect.Parameter(
-                name=func_def.args.vararg.arg,
-                kind=inspect.Parameter.VAR_KEYWORD,
-                annotation=func_def.args.vararg.annotation,
-            ))
-        signature = inspect.Signature(parameters)
-        remaining_pos_only = len(func_def.args.posonlyargs)
-        remaining_pos_or_kw = len(func_def.args.args)
-        for i in range(len(func_def.args.defaults)):
-            if remaining_pos_only > 0:
-                parameters_with_defaults.append(func_def.args.posonlyargs[remaining_pos_only - 1].arg)
-                remaining_pos_only -= 1
-            else:
-                parameters_with_defaults.append(func_def.args.args[remaining_pos_or_kw - 1].arg)
-                remaining_pos_or_kw -= 1
-
-        for i in range(len(func_def.args.kw_defaults)):
-            if func_def.args.kw_defaults[i] is not None:
-                parameters_with_defaults.append(func_def.args.kwonlyargs[i].arg)
-
+        signature_and_parameters = get_signature_from_arguments(func_def.args)
         used_variables = find_used_variables(func_def, self.local_names | self.cell_names | self.free_names)
         free_name_set = self.cell_names & used_variables.variable_names
         closure = (CellType(),) * len(free_name_set)
-        inner_bytecode = ast_to_bytecode(func_def, signature, self.globals,
+
+        inner_bytecode = ast_to_bytecode(func_def, signature_and_parameters.signature, self.globals,
                                          closure,
                                          tuple(free_name_set),
                                          tuple(used_variables.cell_names),
                                          tuple(used_variables.variable_names)
                                          )
         return InnerFunction(bytecode=inner_bytecode,
-                             parameters_with_defaults=tuple(parameters_with_defaults))
+                             parameters_with_defaults=tuple(signature_and_parameters.parameters_with_defaults))
+
+    def _create_lambda(self, lambda_def: ast.Lambda) -> InnerFunction:
+        signature_and_parameters = get_signature_from_arguments(lambda_def.args)
+        used_variables = find_used_variables(lambda_def, self.local_names | self.cell_names | self.free_names)
+        free_name_set = self.cell_names & used_variables.variable_names
+        closure = (CellType(),) * len(free_name_set)
+        inner_bytecode = lambda_ast_to_bytecode(lambda_def, signature_and_parameters.signature, self.globals,
+                                         closure,
+                                         tuple(free_name_set),
+                                         tuple(used_variables.cell_names),
+                                         tuple(used_variables.variable_names)
+                                         )
+        return InnerFunction(bytecode=inner_bytecode,
+                             parameters_with_defaults=signature_and_parameters.parameters_with_defaults)
 
 
 @dataclass(frozen=True)
@@ -1068,7 +1047,65 @@ class UsedVariables:
     cell_names: frozenset[str]
 
 
-def find_used_variables(func_def: ast.FunctionDef, outer_variables: frozenset[str]) -> UsedVariables:
+@dataclass(frozen=True)
+class SignatureAndParameters:
+    signature: inspect.Signature
+    parameters_with_defaults: tuple[str, ...]
+
+
+def get_signature_from_arguments(args: ast.arguments) -> SignatureAndParameters:
+    parameters = []
+    parameters_with_defaults = []
+    for param in args.args:
+        parameters.append(inspect.Parameter(
+            name=param.arg,
+            kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=param.annotation,
+        ))
+    for param in args.posonlyargs:
+        parameters.append(inspect.Parameter(
+            name=param.arg,
+            kind=inspect.Parameter.POSITIONAL_ONLY,
+            annotation=param.annotation,
+        ))
+    if args.vararg:
+        parameters.append(inspect.Parameter(
+            name=args.vararg.arg,
+            kind=inspect.Parameter.VAR_POSITIONAL,
+            annotation=args.vararg.annotation,
+        ))
+    for param in args.kwonlyargs:
+        parameters.append(inspect.Parameter(
+            name=param.arg,
+            kind=inspect.Parameter.KEYWORD_ONLY,
+            annotation=param.annotation,
+        ))
+    if args.kwarg:
+        parameters.append(inspect.Parameter(
+            name=args.vararg.arg,
+            kind=inspect.Parameter.VAR_KEYWORD,
+            annotation=args.vararg.annotation,
+        ))
+    signature = inspect.Signature(parameters)
+    remaining_pos_only = len(args.posonlyargs)
+    remaining_pos_or_kw = len(args.args)
+    for i in range(len(args.defaults)):
+        if remaining_pos_only > 0:
+            parameters_with_defaults.append(args.posonlyargs[remaining_pos_only - 1].arg)
+            remaining_pos_only -= 1
+        else:
+            parameters_with_defaults.append(args.args[remaining_pos_or_kw - 1].arg)
+            remaining_pos_or_kw -= 1
+
+    for i in range(len(args.kw_defaults)):
+        if args.kw_defaults[i] is not None:
+            parameters_with_defaults.append(args.kwonlyargs[i].arg)
+
+    return SignatureAndParameters(signature=signature,
+                                  parameters_with_defaults=tuple(parameters_with_defaults))
+
+
+def find_used_variables(func_def: ast.FunctionDef | ast.Lambda, outer_variables: frozenset[str]) -> UsedVariables:
     variable_names = set()
     cell_names = set()
     def add_names_to_variable_names(assignment_target):
@@ -1115,8 +1152,14 @@ def find_used_variables(func_def: ast.FunctionDef, outer_variables: frozenset[st
                 case _:
                     iterate_node(child)
 
-    for statement in func_def.body:
-        iterate_node(statement)
+    match func_def:
+        # Do not capture body; that make it a str instead of an ast object!
+        case ast.FunctionDef():
+            for statement in func_def.body:
+                iterate_node(statement)
+
+        case ast.Lambda():
+            iterate_node(func_def.body)
 
     for arg in func_def.args.args:
         variable_names.add(arg.arg)
@@ -1200,6 +1243,46 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
                 lineno=function_ast.body[-1].lineno,
             ),
             lineno=function_ast.body[-1].lineno,
+        )
+    , {})
+    return bytecode
+
+
+def lambda_ast_to_bytecode(lambda_ast: ast.Lambda,
+                    signature: inspect.Signature,
+                    function_globals: dict[str, object],
+                    function_closure: tuple[CellType, ...],
+                    free_names: tuple[str, ...],
+                    cell_names: tuple[str, ...],
+                    variable_names: tuple[str, ...]) -> Bytecode:
+    free_vars = free_names
+    cell_names = frozenset(cell_names + free_vars)
+    local_names = frozenset(set(variable_names) - set(cell_names))
+
+    closure_dict = {}
+    for i in range(len(free_vars)):
+        closure_dict[free_vars[i]] = function_closure[i]
+
+    bytecode = Bytecode(
+        function_name='lambda',
+        signature=signature,
+        local_names=local_names,
+        cell_names=cell_names,
+        free_names=frozenset(free_vars),
+        globals=function_globals,
+        closure=closure_dict,
+    )
+
+    parameter_cells = (cell_names - frozenset(free_names)) & {name for name in variable_names[:len(signature.parameters)]}
+    for parameter_cell_var in parameter_cells:
+        bytecode = bytecode.add_op(opcode.LoadLocal(name=parameter_cell_var))
+        bytecode = bytecode.add_op(opcode.StoreCell(name=parameter_cell_var, is_free=False))
+        closure_dict[parameter_cell_var] = CellType()
+
+    bytecode = bytecode.with_statement_opcodes(
+        ast.Return(
+            lambda_ast.body,
+            lineno=lambda_ast.body.lineno,
         )
     , {})
     return bytecode

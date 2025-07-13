@@ -726,3 +726,24 @@ def test_inner_function_with_defaults():
     assert_bytecode_for_args(outer_function, 1)
     assert_bytecode_for_args(outer_function, 2)
     assert_bytecode_for_args(outer_function, 3)
+
+
+def test_lambda_function():
+    def outer_function(x):
+        adder = lambda y: x + y
+        return adder(x * 2)
+
+    assert_bytecode_for_args(outer_function, 1)
+    assert_bytecode_for_args(outer_function, 2)
+    assert_bytecode_for_args(outer_function, 3)
+
+
+def test_lambda_function_with_defaults():
+    def outer_function(x):
+        adder = lambda y=x*2: x + y
+        x = 10
+        return adder()
+
+    assert_bytecode_for_args(outer_function, 1)
+    assert_bytecode_for_args(outer_function, 2)
+    assert_bytecode_for_args(outer_function, 3)
