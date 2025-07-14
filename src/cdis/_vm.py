@@ -77,7 +77,13 @@ class CDisVM:
         top_frame = self.frames[-1]
         instruction = bytecode.instructions[top_frame.bytecode_index]
         if self._trace:
-            print(instruction)
+            print(f'''
+            stack={top_frame.stack}
+            variables={top_frame.variables}
+            synthetics={top_frame.synthetic_variables}
+            current_exception={top_frame.current_exception}
+            {instruction}
+            ''')
         try:
             instruction.opcode.execute(top_frame)
             top_frame.bytecode_index += 1

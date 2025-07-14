@@ -1113,6 +1113,80 @@ class DeleteCell(Opcode):
 # Object
 ########################################
 @dataclass(frozen=True)
+class AsBool(Opcode):
+    """Replaces top of stack with its truthfulness.
+
+    Notes
+    -----
+        | AsBool
+        | Stack Effect: 0
+        | Prior: ..., object
+        | After: ..., bool
+
+    Examples
+    --------
+    >>> bool(obj)
+    # This would normally use LoadGlobal(name='bool'), but
+    # AsBool is used here to demostrate how it is used.
+    LoadLocal(name="obj")
+    AsBool()
+    """
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1).push(
+            ValueSource(
+                sources=(instruction,),
+                value_type=bool,
+            )
+        ),
+
+    def execute(self, frame: "Frame") -> None:
+        obj = frame.stack.pop()
+        frame.stack.append(bool(obj))
+
+
+@dataclass(frozen=True)
+class GetType(Opcode):
+    """Replaces top of stack with its type
+
+    Notes
+    -----
+        | GetType
+        | Stack Effect: 0
+        | Prior: ..., object
+        | After: ..., type
+
+    Examples
+    --------
+    >>> type(obj)
+    # This would normally use LoadGlobal(name='type'), but
+    # GetType is used here to demostrate how it is used.
+    LoadLocal(name="obj")
+    GetType()
+    """
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1).push(
+            ValueSource(
+                sources=(instruction,),
+                value_type=type[previous_stack_metadata.stack[-1].value_type],
+            )
+        ),
+
+    def execute(self, frame: "Frame") -> None:
+        obj = frame.stack.pop()
+        frame.stack.append(type(obj))
+
+
+@dataclass(frozen=True)
 class LoadAttr(Opcode):
     """Replaces top of stack with the result of an attribute lookup.
 

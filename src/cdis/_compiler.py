@@ -281,9 +281,9 @@ class Bytecode:
             case ast.Constant(value):
                 return self.add_expression(expression, opcode.LoadConstant(value))
 
-            case ast.Attribute(attr) as a:
+            case ast.Attribute(attr=attr_name) as a:
                 out = self.with_expression_opcodes(a.value, renames)
-                out = out.add_expression(expression, opcode.LoadAttr(attr.id))
+                out = out.add_expression(expression, opcode.LoadAttr(attr_name))
                 return out
 
             case ast.Name(id=name, ctx=ast.Load()):
@@ -661,18 +661,18 @@ class Bytecode:
                         ),
                     )
 
-            case ast.Attribute(attr) as a:
+            case ast.Attribute(attr=attr_name) as a:
                 return AssignmentCode(
                     stack_items=1,
                     load_target=lambda b: b.with_expression_opcodes(a.value, renames),
                     load_current_value=lambda b: b.add_expression(
-                        expression, opcode.LoadAttr(attr.id)
+                        expression, opcode.LoadAttr(attr_name)
                     ),
                     store_value=lambda b: b.add_expression(
-                        expression, opcode.StoreAttr(attr.id)
+                        expression, opcode.StoreAttr(attr_name)
                     ),
                     delete_value=lambda b: b.add_expression(
-                        expression, opcode.DeleteAttr(attr.id)
+                        expression, opcode.DeleteAttr(attr_name)
                     ),
                 )
 
@@ -879,6 +879,129 @@ class Bytecode:
                 for statement in finalbody:
                     out = out.with_statement_opcodes(statement, renames)
 
+                return out
+
+            case ast.With(items=with_items, body=body):
+                exit_callables = []
+                out = self
+
+                def call_exit(exception_index, exit_index):
+                    return (
+                        opcode.LoadSynthetic(index=exit_index),
+                        opcode.CreateCallBuilder(),
+                        opcode.LoadSynthetic(index=exception_index),
+                        opcode.GetType(),
+                        opcode.WithPositionalArg(index=0),
+                        opcode.LoadSynthetic(index=exception_index),
+                        opcode.WithPositionalArg(index=1),
+                        opcode.LoadSynthetic(index=exception_index),
+                        opcode.LoadAttr(name='__traceback__'),
+                        opcode.WithPositionalArg(index=2),
+                        opcode.CallWithBuilder()
+                    )
+
+                def call_normal_exit(exit_index):
+                    return (
+                        opcode.LoadSynthetic(index=exit_index),
+                        opcode.CreateCallBuilder(),
+                        opcode.LoadConstant(None),
+                        opcode.WithPositionalArg(index=0),
+                        opcode.LoadConstant(None),
+                        opcode.WithPositionalArg(index=1),
+                        opcode.LoadConstant(None),
+                        opcode.WithPositionalArg(index=2),
+                        opcode.CallWithBuilder(),
+                        opcode.Pop()
+                    )
+
+                for with_item in with_items:
+                    item_start_label = Label()
+                    item_done_label = Label()
+                    next_label = Label()
+                    handler_start = Label()
+
+                    out = out.add_label(item_start_label)
+                    out = out.with_expression_opcodes(with_item.context_expr, renames)
+                    out = out.new_synthetic()
+                    out = out.add_ops(opcode.Dup(),
+                                      opcode.LoadAttr(name='__enter__'),
+                                      opcode.Swap(),
+                                      opcode.LoadAttr(name='__exit__'),
+                                      opcode.StoreSynthetic(out.current_synthetic),
+                                      opcode.CreateCallBuilder(),
+                                      opcode.CallWithBuilder()
+                                      )
+
+                    if with_item.optional_vars is not None:
+                        out = out.with_assignment_opcodes(with_item.optional_vars, renames)
+                    else:
+                        out = out.add_op(opcode.Pop())
+
+                    out.add_label(item_done_label)
+                    # If an exception is raised when calling __enter__,
+                    # do not shallow the exception, even if __exit__ return True
+                    if len(exit_callables) != 0:
+                        # Call exits of all context managers initialized up to this point
+                        out = out.add_op(opcode.JumpTo(next_label))
+                        out = out.add_exception_handler(ExceptionHandler(
+                            exception_class=BaseException,
+                            from_label=item_start_label,
+                            to_label=item_done_label,
+                            handler_label=handler_start,
+                        ))
+                        out = out.add_label(handler_start)
+                        out = out.new_synthetic()
+                        exception = out.current_synthetic
+                        out = out.add_op(opcode.StoreSynthetic(index=exception))
+                        for exit_callable in exit_callables:
+                            out = out.add_ops(
+                                *call_exit(exception, exit_callable)
+                            )
+                            out.add_op(opcode.Pop())
+                        out = out.free_synthetic()
+                        out = out.add_op(opcode.ReraiseLast())
+                        out = out.add_label(next_label)
+
+                    exit_callables.append(out.current_synthetic)
+                with_start = Label()
+                with_end = Label()
+                handler_start = Label()
+                handler_end = Label()
+                out = out.add_label(with_start)
+                for inner_stmt in body:
+                    out = out.with_statement_opcodes(inner_stmt, renames)
+                out = out.add_op(opcode.JumpTo(handler_end))
+                out = out.add_label(with_end)
+                out = out.add_label(handler_start)
+                out = out.add_exception_handler(ExceptionHandler(
+                    exception_class=BaseException,
+                    from_label=with_start,
+                    to_label=with_end,
+                    handler_label=handler_start,
+                ))
+                out = out.new_synthetic()
+                exception = out.current_synthetic
+                out = out.add_op(opcode.StoreSynthetic(index=exception))
+                out = out.add_op(opcode.LoadConstant(constant=False))
+                for exit_callable in exit_callables:
+                    out = out.add_ops(
+                        *call_exit(exception, exit_callable)
+                    )
+                    # if there are multiple context managers,
+                    # the exception is shallow if ANY of their exits
+                    # return a truthy value
+                    out = out.add_op(opcode.AsBool())
+                    out = out.add_op(opcode.BinaryOp(operator=opcode.BinaryOperator.BitOr))
+                out = out.add_op(opcode.IfTrue(target=handler_end))
+                out = out.add_op(opcode.ReraiseLast())
+                out = out.free_synthetic()
+                out = out.add_label(handler_end)
+                for exit_callable in exit_callables:
+                    out = out.add_ops(
+                        *call_normal_exit(exit_callable)
+                    )
+                for _ in exit_callables:
+                    out = out.free_synthetic()
                 return out
 
             case ast.Assign(targets, value):

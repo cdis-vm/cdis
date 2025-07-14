@@ -768,3 +768,130 @@ def test_lambda_function_with_defaults():
     assert_bytecode_for_args(outer_function, 1)
     assert_bytecode_for_args(outer_function, 2)
     assert_bytecode_for_args(outer_function, 3)
+
+
+def test_context_manager_error_enter():
+    class A:
+        def __init__(self):
+            self.called_exit = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self.called_exit = True
+            return False
+
+    def fun():
+        manager = A()
+        try:
+            with manager, manager.missing_attribute:
+                pass
+        except AttributeError:
+            return manager.called_exit
+
+    assert_bytecode_for_args(fun)
+
+
+def test_context_manager_call_exit_normally():
+    class A:
+        def __init__(self):
+            self.value = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self.value = 10
+            return False
+
+    def fun():
+        manager = A()
+        y = 0
+        with manager:
+            y = 20
+        return y + manager.value
+
+    assert_bytecode_for_args(fun)
+
+
+def test_context_manager_shallow_exception_if_exit_truthful():
+    class A:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return 1  # 1 is truthful
+
+    def fun():
+        manager = A()
+        y = 0
+        with manager:
+            y = 20
+            raise ValueError
+        return y
+
+    assert_bytecode_for_args(fun)
+
+
+def test_context_manager_shallow_exception_if_any_exit_truthful():
+    class A:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return 1  # 1 is truthful
+
+    class B:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return 0  # 0 is false
+
+    def fun(a, b):
+        y = 0
+        with a, b:
+            y = 20
+            raise ValueError
+        return y
+
+    assert_bytecode_for_args(fun, A(), B())
+    assert_bytecode_for_args(fun, B(), A())
+
+
+def test_context_manager_reraise_exception_if_exit_false():
+    class A:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return 0  # 0 is false
+
+    def fun():
+        manager = A()
+        y = 0
+        with manager:
+            y = 20
+            raise ValueError
+        return y
+
+    assert_bytecode_for_args(fun)
+
+
+def test_context_manager_assign_value():
+    class A:
+        def __enter__(self):
+            return 10
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return 0  # 0 is false
+
+    def fun():
+        manager = A()
+        y = 0
+        with manager as x:
+            y = x + 20
+        return y
+
+    assert_bytecode_for_args(fun)
