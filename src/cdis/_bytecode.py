@@ -1,8 +1,11 @@
+import types
 from collections.abc import Callable
+from copy import copy
 from dataclasses import dataclass, replace, field
 from abc import ABC, abstractmethod
+from functools import cached_property
 from inspect import Signature, Parameter
-from typing import TYPE_CHECKING, Iterator, Any, Union
+from typing import TYPE_CHECKING, Iterator, Any, Union, cast
 from enum import Enum
 import ast
 import operator
@@ -315,6 +318,45 @@ class ValueSource:
     value_type: type
     """The type of the value."""
 
+    def unify_with(self, other: 'ValueSource') -> 'ValueSource':
+        """Unify this value source with another value source."""
+        return ValueSource(
+            sources=tuple(set(self.sources) | set(other.sources)),
+            value_type=_unify_types(self.value_type, other.value_type)
+        )
+
+    def __eq__(self, other):
+        if isinstance(other, ValueSource):
+            return self.value_type == other.value_type
+        else:
+            return False
+
+    def __hash__(self):
+        return hash(self.value_type)
+
+
+def _find_closest_common_ancestor(*cls_list: type) -> type:
+    from collections import defaultdict
+    mros = [(list(cls.__mro__) if hasattr(cls, '__mro__') else [cls]) for cls in cls_list]
+    track = defaultdict(int)
+    while mros:
+        for mro in mros:
+            cur = mro.pop(0)
+            track[cur] += 1
+            if track[cur] == len(cls_list):
+                return cur
+            if len(mro) == 0:
+                mros.remove(mro)
+    return object
+
+
+def _unify_types(a: type, b: type) -> type:
+    if issubclass(a, b):
+        return b
+    elif issubclass(b, a):
+        return a
+    return _find_closest_common_ancestor(a, b)
+
 
 @dataclass(frozen=True)
 class StackMetadata:
@@ -323,11 +365,57 @@ class StackMetadata:
     stack: tuple[ValueSource, ...]
     """The values on the stack when the instruction is executed."""
 
-    variables: dict[str, tuple[ValueSource, ...]]
+    variables: dict[str, ValueSource]
     """The variables value sources when the instruction is executed."""
 
     synthetic_variables: tuple[ValueSource, ...]
     """The synthetic variables value sources when the instruction is executed."""
+
+    dead: bool = False
+    """True if the code is unreachable, False otherwise."""
+
+    @classmethod
+    def dead_code(cls) -> 'StackMetadata':
+        return cls(stack=(), variables={}, synthetic_variables=(), dead=True)
+
+    def unify_with(self, other: 'StackMetadata') -> 'StackMetadata':
+        if other.dead:
+            return self
+        if self.dead:
+            return other
+
+        if len(self.stack) != len(other.stack):
+            raise ValueError('Stack size mismatch')
+
+        new_stack = tuple(self.stack[index].unify_with(other.stack[index]) for index in range(len(self.stack)))
+        new_variables = {}
+        own_keys = self.variables.keys() - other.variables.keys()
+        their_keys = other.variables.keys() - self.variables.keys()
+        shared_keys = self.variables.keys() & other.variables.keys()
+
+        for key in own_keys:
+            new_variables[key] = self.variables[key]
+        for key in their_keys:
+            new_variables[key] = other.variables[key]
+        for key in shared_keys:
+            new_variables[key] = self.variables[key].unify_with(other.variables[key])
+
+        shared_synthetics = min(len(self.synthetic_variables), len(other.synthetic_variables))
+        unshared_synthetics = ()
+        if len(self.synthetic_variables) > len(other.synthetic_variables):
+            unshared_synthetics = self.synthetic_variables[shared_synthetics:]
+        elif len(self.synthetic_variables) < len(other.synthetic_variables):
+            unshared_synthetics = self.synthetic_variables[shared_synthetics:]
+
+        new_synthetic_variables = tuple(self.synthetic_variables[index].unify_with(other.synthetic_variables[index])
+                                        for index in range(shared_synthetics)) + unshared_synthetics
+
+        return StackMetadata(
+            stack=new_stack,
+            variables=new_variables,
+            synthetic_variables=new_synthetic_variables,
+            dead=False,
+        )
 
     def pop(self, count: int):
         """Pops the given number of values from the stack."""
@@ -340,8 +428,14 @@ class StackMetadata:
     def set_variable(self, name: str, value: ValueSource) -> "StackMetadata":
         """Sets the value source for the given variable."""
         new_variables = dict(self.variables)
-        value_sources = self.variables.get(name, ())
-        new_variables[name] = value_sources + (value,)
+        value_sources = self.variables.get(name, None)
+        if value_sources is None:
+            new_variables[name] = value
+        else:
+            new_variables[name] = ValueSource(
+                sources=(*value_sources.sources, *value.sources),
+                value_type=_unify_types(value.value_type, value_sources.value_type),
+            )
         return replace(self, variables=new_variables)
 
     def new_synthetic(self, value: ValueSource) -> "StackMetadata":
@@ -363,6 +457,25 @@ class StackMetadata:
                 + (value,)
                 + self.synthetic_variables[index + 1 :],
             )
+
+    def __eq__(self, other):
+        if self.dead != other.dead:
+            return False
+        if self.stack != other.stack:
+            return False
+        if self.variables != other.variables:
+            return False
+        if self.synthetic_variables != other.synthetic_variables:
+            return False
+        return True
+        return (self.dead == other.dead and
+                self.stack == other.stack and
+                self.variables == other.variables and
+                self.synthetic_variables == other.synthetic_variables
+        )
+
+    def __hash__(self):
+        return hash((self.dead, self.stack, self.variables, self.synthetic_variables))
 
 
 @dataclass(frozen=True)
@@ -596,12 +709,10 @@ class LoadLocal(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        local_metadata = previous_stack_metadata.variables[self.name]
+        local_metadata = previous_stack_metadata.variables.get(self.name,
+                                                               ValueSource((), object))
         return previous_stack_metadata.push(
-            ValueSource(
-                tuple(*[metadata.sources for metadata in local_metadata]),
-                _determine_type([metadata.value_type for metadata in local_metadata]),
-            )
+            local_metadata
         ),
 
     def execute(self, frame: "Frame") -> None:
@@ -666,7 +777,7 @@ class LoadCell(Opcode):
         except (ValueError, KeyError):
             if self.is_free:
                 raise NameError(
-                    f"free variable  '{self.name}' referenced before assignment"
+                    f"free variable '{self.name}' referenced before assignment in enclosing scope"
                 )
             else:
                 raise UnboundLocalError(
@@ -722,14 +833,7 @@ class LoadSynthetic(Opcode):
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         synthetic_metadata = previous_stack_metadata.synthetic_variables[self.index]
-        return previous_stack_metadata.push(
-            ValueSource(
-                tuple(*[metadata.sources for metadata in synthetic_metadata]),
-                _determine_type(
-                    [metadata.value_type for metadata in synthetic_metadata]
-                ),
-            )
-        ),
+        return previous_stack_metadata.push(synthetic_metadata),
 
     def execute(self, frame: "Frame") -> None:
         frame.stack.append(frame.synthetic_variables[self.index])
@@ -1563,6 +1667,162 @@ class ReturnValue(Opcode):
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
+
+    def execute(self, frame: "Frame") -> None:
+        out = frame.stack[-1]
+        vm = frame.vm
+        vm.frames.pop()
+        vm.frames[-1].stack.append(out)
+
+
+@dataclass(frozen=True)
+class SaveGeneratorState(Opcode):
+    """Saves the frame to the generator at TOS, then pops the generator.
+
+    Notes
+    -----
+        | SaveGeneratorState
+        | Stack Effect: -1
+        | Prior: ..., generator
+        | After: ...
+
+    Attributes
+    ----------
+    stack_metadata: StackMetadata
+        The state of the frame when this opcode is executed.
+
+    Examples
+    --------
+    >>> yield 10
+    LoadConstant(constant=10)
+    LoadSynthetic(index=0)
+    SaveGeneratorState(StackMetadata(stack=1, variables=(), closure=(), synthetic_variables=1))
+    YieldValue()
+    LoadSynthetic(index=0)
+    RestoreGeneratorState(StackMetadata(stack=1, variables=(), closure=(), synthetic_variables=1))
+    Pop()
+    """
+    state_id: int
+    stack_metadata: StackMetadata
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        if self.stack_metadata is None:
+            return previous_stack_metadata.pop(1),
+        return self.stack_metadata,
+
+    def execute(self, frame: "Frame") -> None:
+        generator = frame.stack.pop()
+        # This relies on YieldValue not modifying the frame
+        # before popping it!
+        generator._state_id = self.state_id
+        generator._saved_state = copy(frame)
+        generator._saved_state.stack = copy(frame.stack)
+        generator._saved_state.synthetic_variables = copy(frame.synthetic_variables)
+        generator._saved_state.variables = copy(frame.variables)
+        generator._saved_state.closure = copy(frame.closure)
+
+
+@dataclass(frozen=True)
+class RestoreGeneratorState(Opcode):
+    """Pops generator from TOS, restores the frame from the generator, then
+    replace TOS with the sent value stored on the generator (or raise an
+    exception if throw was called on the generator).
+
+    Notes
+    -----
+        | RestoreGeneratorState
+        | Stack Effect: 0
+        | Prior: ..., generator
+        | After: ..., sent_value
+
+    Attributes
+    ----------
+    stack: int
+        Size of the stack when this bytecode is executed.
+    variables: tuple[str, ...]
+        Local variables defined by the function
+    closure: tuple[str, ...]
+        Closure variables used by the function
+    synthetic_variables: int
+        Synthetic variables used by the function
+
+    Examples
+    --------
+    >>> yield 10
+    LoadConstant(constant=10)
+    LoadSynthetic(index=0)
+    SaveGeneratorState(stack=1, variables=(), closure=(), synthetic_variables=1)
+    YieldValue()
+    LoadSynthetic(index=0)
+    RestoreGeneratorState(stack=1, variables=(), closure=(), synthetic_variables=1)
+    Pop()
+    """
+    state_id: int
+    stack_metadata: StackMetadata
+
+    def next_stack_metadata(
+            self,
+            instruction: "Instruction",
+            bytecode: "Bytecode",
+            previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        if self.stack_metadata is None:
+            return previous_stack_metadata.pop(2).push(ValueSource(sources=(instruction,), value_type=object)),
+        else:
+            return self.stack_metadata.pop(1).push(ValueSource(sources=(instruction,), value_type=object)),
+
+    def execute(self, frame: "Frame") -> None:
+        generator = frame.stack.pop()
+        sent_value = generator._sent_value
+        thrown_value = generator._thrown_value
+        if thrown_value is not None:
+            raise thrown_value
+
+        frame.stack = generator._saved_state.stack
+        frame.variables = generator._saved_state.variables
+        frame.synthetic_variables = generator._saved_state.synthetic_variables
+        frame.closure = generator._saved_state.closure
+        frame.current_exception = generator._saved_state.current_exception
+
+        frame.stack.pop()
+        frame.stack.append(sent_value)
+
+
+@dataclass(frozen=True)
+class YieldValue(Opcode):
+    """Returns the value on top of stack and "pauses" execution.
+    Acts identically to ReturnValue.
+
+    Notes
+    -----
+        | YieldValue
+        | Stack Effect: -1
+        | Prior: ..., return_value
+        | After: ...
+
+    Examples
+    --------
+    >>> yield 10
+    LoadConstant(constant=10)
+    LoadSynthetic(index=0)
+    SaveGeneratorState()
+    YieldValue()
+    LoadSynthetic(index=0)
+    RestoreGeneratorState()
+    Pop()
+    """
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1),
 
     def execute(self, frame: "Frame") -> None:
         out = frame.stack[-1]
@@ -3052,8 +3312,8 @@ class UnpackElements(Opcode):
                 elements.append(next(iterator))
             except StopIteration:
                 raise ValueError(
-                    f"not enough values to unpack (expected {self.before_count + self.after_count},"
-                    f"got {index})."
+                    f"not enough values to unpack (expected {'at least ' if self.has_extras else ''}{self.before_count + self.after_count}, "
+                    f"got {index})"
                 )
             index += 1
 
@@ -3078,7 +3338,7 @@ class UnpackElements(Opcode):
                 # after_count is 0 if has_extras is False
                 next(iterator)
                 raise ValueError(
-                    f" too many values to unpack (expected {self.before_count})"
+                    f"too many values to unpack (expected {self.before_count})"
                 )
             except StopIteration:
                 pass
@@ -3148,3 +3408,105 @@ class Instruction:
     lineno: int
     """The source line number of this instruction.
     """
+
+    def __eq__(self, other: "Instruction") -> bool:
+        return isinstance(other, Instruction) and self.bytecode_index == other.bytecode_index
+
+    def __hash__(self) -> int:
+        return hash(self.bytecode_index)
+
+
+class MethodType(Enum):
+    VIRTUAL = 'virtual'
+    STATIC = 'static'
+    CLASS = 'class'
+    GENERATOR = 'generator'
+
+    @staticmethod
+    def for_function(function: types.FunctionType) -> "MethodType":
+        if isinstance(function, classmethod):
+            return MethodType.CLASS
+        elif isinstance(function, staticmethod):
+            return MethodType.STATIC
+        else:
+            return MethodType.VIRTUAL
+
+    @staticmethod
+    def for_function_ast(function_ast: ast.FunctionDef) -> "MethodType":
+        # Note: this does assume people don't do something like
+        # have another decorator call classmethod indirectly or
+        # override classmethod/staticmethod
+        for decorator in function_ast.decorator_list:
+            match decorator:
+                case ast.Name(id=name):
+                    match name:
+                        case 'classmethod':
+                            return MethodType.CLASS
+                        case 'staticmethod':
+                            return MethodType.STATIC
+                        case _:
+                            pass
+                case _:
+                    pass
+        else:
+            return MethodType.VIRTUAL
+
+
+@dataclass(frozen=True)
+class ClassInfo:
+    """Information about a class that is already constructed.
+
+    This does not contain information about the bytecode that was run
+    to generate the class.
+    """
+    name: str
+    """The name of the class."""
+    qualname: str
+    """The qualified name of the class."""
+    class_attributes: dict[str, type]
+    """Attributes that are defined on the class."""
+    instance_attributes: dict[str, type]
+    """Attributes that are defined on the instance."""
+    class_attribute_defaults: dict[str, object]
+    """The values of the class attributes when this ClassInfo was created."""
+
+    @cached_property
+    def methods(self) -> dict[str, 'Bytecode']:
+        from ._compiler import Bytecode
+        out: dict[str, Bytecode] = {}
+
+        for method_name, method in self.class_attribute_defaults.items():
+            if isinstance(method, Bytecode):
+                out[method_name] = method
+
+        return out
+
+    def as_class(self, *, vm=None, **vm_kwargs) -> type:
+        from ._compiler import Bytecode
+        from ._vm import CDisVM
+
+        class Out:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        if vm is None:
+            vm = CDisVM()
+
+        Out.__name__ = self.name
+        Out.__qualname__ = self.qualname
+
+        for attribute_name, attribute_value in self.class_attribute_defaults.items():
+            if isinstance(attribute_value, Bytecode):
+                def _run(owner, *args, _method_bytecode: Bytecode=attribute_value, **kwargs):
+                    return vm.run(_method_bytecode, owner, *args, **kwargs, **vm_kwargs)
+
+                setattr(Out, attribute_name, _run)
+            else:
+                setattr(Out, attribute_name, attribute_value)
+
+        def instance_getter(*vm_args, **vm_kwargs):
+            def outer(*args, **kwargs):
+                return Out(*args, **kwargs)
+            return outer
+
+        return Out

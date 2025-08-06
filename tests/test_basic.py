@@ -1,4 +1,6 @@
-from .conftest import assert_bytecode_for_args
+from .conftest import (
+    assert_bytecode_for_args, assert_generator_bytecode_for_args,
+    Skip, Sent, Thrown)
 
 
 def test_return_constant():
@@ -60,7 +62,8 @@ def test_free_variable_deletion():
         nonlocal a
         return a  # noqa
 
-    assert_bytecode_for_args(delete_variable)
+    # Python error messages might change across versions
+    assert_bytecode_for_args(delete_variable, check_exception_args=False)
 
 
 def test_multi_assignment():
@@ -78,9 +81,10 @@ def test_multi_target_assignment():
         a, b = value
         return a + b
 
-    assert_bytecode_for_args(multi_target_assignment, [1])
+    # Python error messages might change across versions
+    assert_bytecode_for_args(multi_target_assignment, [1], check_exception_args=False)
     assert_bytecode_for_args(multi_target_assignment, [1, 2])
-    assert_bytecode_for_args(multi_target_assignment, [1, 2, 3])
+    assert_bytecode_for_args(multi_target_assignment, [1, 2, 3], check_exception_args=False)
 
 
 def test_nested_multi_target_assignment():
@@ -88,10 +92,11 @@ def test_nested_multi_target_assignment():
         a, (b, c) = value
         return a, b, c
 
-    assert_bytecode_for_args(nested_multi_target_assignment, [1])
-    assert_bytecode_for_args(nested_multi_target_assignment, [1, (2,)])
+    # Python error messages might change across versions
+    assert_bytecode_for_args(nested_multi_target_assignment, [1], check_exception_args=False)
+    assert_bytecode_for_args(nested_multi_target_assignment, [1, (2,)], check_exception_args=False)
     assert_bytecode_for_args(nested_multi_target_assignment, [1, (2, 3)])
-    assert_bytecode_for_args(nested_multi_target_assignment, [1, (2, 3, 4)])
+    assert_bytecode_for_args(nested_multi_target_assignment, [1, (2, 3, 4)], check_exception_args=False)
 
 
 def test_multi_target_extras_assignment():
@@ -99,7 +104,8 @@ def test_multi_target_extras_assignment():
         a, *b, c = value
         return a, b, c
 
-    assert_bytecode_for_args(multi_target_extras_assignment, [1])
+    # Python error messages might change across versions
+    assert_bytecode_for_args(multi_target_extras_assignment, [1], check_exception_args=False)
     assert_bytecode_for_args(multi_target_extras_assignment, [1, 2])
     assert_bytecode_for_args(multi_target_extras_assignment, [1, 2, 3])
     assert_bytecode_for_args(multi_target_extras_assignment, [1, 2, 3, 4])
@@ -895,3 +901,29 @@ def test_context_manager_assign_value():
         return y
 
     assert_bytecode_for_args(fun)
+
+
+def test_generator():
+    def generator(x):
+        total=0
+        for i in range(x):
+            total = total + i
+            yield total
+
+    assert_generator_bytecode_for_args(generator, 0)
+    assert_generator_bytecode_for_args(generator, 5)
+    assert_generator_bytecode_for_args(generator, 10)
+
+
+def test_generator_send():
+    def generator(x):
+        yield (10 + (yield x))
+
+    # Assert that when this generator is used incorrectly, it matches Python
+    assert_generator_bytecode_for_args(generator, 0)
+
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(),
+        Sent(20),
+        Skip()
+    ))
