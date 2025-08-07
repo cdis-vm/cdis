@@ -927,3 +927,32 @@ def test_generator_send():
         Sent(20),
         Skip()
     ))
+
+
+def test_generator_throw():
+    def generator(x):
+        try:
+            yield x
+            return
+        except ValueError:
+            yield 2 * x
+            raise
+
+    # No exception
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(2),
+    ))
+
+    # ValueError
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(),
+        Thrown(ValueError()),
+        Skip()
+    ))
+
+    # NameError
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(),
+        Thrown(NameError()),
+        Skip()
+    ))

@@ -1780,8 +1780,6 @@ class RestoreGeneratorState(Opcode):
         generator = frame.stack.pop()
         sent_value = generator._sent_value
         thrown_value = generator._thrown_value
-        if thrown_value is not None:
-            raise thrown_value
 
         frame.stack = generator._saved_state.stack
         frame.variables = generator._saved_state.variables
@@ -1791,6 +1789,9 @@ class RestoreGeneratorState(Opcode):
 
         frame.stack.pop()
         frame.stack.append(sent_value)
+
+        if thrown_value is not None:
+            raise thrown_value
 
 
 @dataclass(frozen=True)

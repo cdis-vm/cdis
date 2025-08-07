@@ -126,3 +126,6 @@ class CDisVM:
                 break
             else:
                 raise e
+
+    def __repr__(self):
+        return '>'.join(f'{_frame.function_name}:{_frame.bytecode_index}' for _frame in self.frames)

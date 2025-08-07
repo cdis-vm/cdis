@@ -91,7 +91,8 @@ class Bytecode:
         from cdis._vm import CDisVM
 
         new_bytecode = replace(
-            self, instructions=(), finally_blocks=(), signature=inspect.Signature()
+            self, function_type=opcode.MethodType.VIRTUAL,
+            instructions=(), finally_blocks=(), signature=inspect.Signature()
         )
         new_bytecode = new_bytecode.with_statement_opcodes(
             ast.Return(value=expression, lineno=0, col_offset=0), {}
@@ -1748,6 +1749,32 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.CallWithBuilder(),
         opcode.ReturnValue())
     generator_class_attributes['send'] = send_bytecode
+
+    throw_bytecode = Bytecode(
+        function_name='throw',
+        function_type=opcode.MethodType.VIRTUAL,
+        generator_instance_parameter='_generator_instance',
+        signature=inspect.Signature(parameters=[
+            inspect.Parameter(name='_generator_instance', kind=inspect.Parameter.POSITIONAL_ONLY),
+            inspect.Parameter(name='error', kind=inspect.Parameter.POSITIONAL_ONLY)
+        ]),
+        instructions=(),
+        local_names=frozenset({'_generator_instance'}),
+        free_names=frozenset(),
+        cell_names=frozenset(),
+        globals=bytecode.globals,
+        closure=bytecode.closure
+    )
+    throw_bytecode = throw_bytecode.add_ops(
+        opcode.LoadLocal(name='error'),
+        opcode.LoadLocal(name='_generator_instance'),
+        opcode.StoreAttr(name='_thrown_value'),
+        opcode.LoadLocal(name='_generator_instance'),
+        opcode.LoadAttr(name='__next__'),
+        opcode.CreateCallBuilder(),
+        opcode.CallWithBuilder(),
+        opcode.ReturnValue())
+    generator_class_attributes['throw'] = throw_bytecode
 
     return opcode.ClassInfo(
         name=f'<generator {bytecode.function_name}>',
