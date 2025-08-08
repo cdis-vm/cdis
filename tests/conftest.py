@@ -125,7 +125,7 @@ def assert_generator_bytecode_for_args(
                     f"Stack Trace: {vm.stack_trace}\n"
                     f"Source:\n{inspect.getsource(generator)}\n"
                     f"Bytecode:\n{generator_bytecode.methods['_next_0']}"
-                )
+                ) from actual_error
             else:
                 return not isinstance(expected_error, StopIteration)
 

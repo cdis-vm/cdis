@@ -956,3 +956,61 @@ def test_generator_throw():
         Thrown(NameError()),
         Skip()
     ))
+
+
+def test_subgenerator():
+    def generator(x):
+        yield from [2 * n for n in range(x)]
+
+    assert_generator_bytecode_for_args(generator, 0)
+    assert_generator_bytecode_for_args(generator, 5)
+    assert_generator_bytecode_for_args(generator, 10)
+
+
+def test_subgenerator_send():
+    def coroutine(x):
+        yield (10 + (yield x))
+
+    def generator(x):
+        yield from coroutine(x)
+
+    # Assert that when this generator is used incorrectly, it matches Python
+    assert_generator_bytecode_for_args(generator, 0)
+
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(),
+        Sent(20),
+        Skip()
+    ))
+
+
+def test_subgenerator_throw():
+    def coroutine(x):
+        try:
+            yield x
+            return
+        except ValueError:
+            yield 2 * x
+            raise
+
+    def generator(x):
+        yield from coroutine(x)
+
+    # No exception
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(2),
+    ))
+
+    # ValueError
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(),
+        Thrown(ValueError()),
+        Skip()
+    ))
+
+    # NameError
+    assert_generator_bytecode_for_args(generator, 0, sequence=(
+        Skip(),
+        Thrown(NameError()),
+        Skip()
+    ))

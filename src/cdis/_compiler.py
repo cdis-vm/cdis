@@ -7,7 +7,7 @@ from cdis import bytecode as opcode
 from dataclasses import dataclass, replace, field
 from functools import cached_property
 from types import FunctionType, CellType
-from typing import cast, Callable
+from typing import cast, Callable, Iterable
 import inspect
 import ast
 
@@ -90,6 +90,8 @@ class Bytecode:
     def _evaluate_constant_expr(self, expression: ast.expr):
         from cdis._vm import CDisVM
 
+        # Make MethodType VIRTUAL, since other MethodTypes might augment
+        # return and expect the stack to be in a certain state
         new_bytecode = replace(
             self, function_type=opcode.MethodType.VIRTUAL,
             instructions=(), finally_blocks=(), signature=inspect.Signature()
@@ -604,7 +606,7 @@ class Bytecode:
                 out = out.add_op(opcode.LoadSynthetic(0))
 
                 restore_bytecode_index = len(out.instructions)
-                out = out.add_op(opcode.RestoreGeneratorState(
+                out = out.add_op(opcode.DelegateOrRestoreGeneratorState(
                         state_id=yield_id,
                         stack_metadata=cast(StackMetadata, None),
                     ))
@@ -623,7 +625,58 @@ class Bytecode:
                         *finalized_bytecode.instructions[save_bytecode_index + 1:restore_bytecode_index],
                         Instruction(bytecode_index=restore_bytecode_index,
                                     lineno=old_restore_instruction.lineno,
-                                    opcode=opcode.RestoreGeneratorState(
+                                    opcode=opcode.DelegateOrRestoreGeneratorState(
+                                        state_id=yield_id,
+                                        stack_metadata=stack_metadata)),
+                        *finalized_bytecode.instructions[restore_bytecode_index + 1:],
+                    )
+                    return replace(finalized_bytecode, instructions=new_instructions)
+
+                out = out.add_deferred_processor(deferred_processor)
+                return out
+
+            case ast.YieldFrom(value=value):
+                out = self.with_expression_opcodes(value, renames)
+                out = out.add_op(opcode.GetIterator())
+                yield_id = out.current_yield
+                out = out.add_op(opcode.LoadSynthetic(0))
+                out = out.add_op(opcode.SetGeneratorDelegate())
+
+                out = out.add_op(opcode.LoadConstant(None))
+                out = out.add_op(opcode.LoadSynthetic(0))
+                save_bytecode_index = len(out.instructions)
+                out = out.add_op(opcode.SaveGeneratorState(
+                    state_id=yield_id,
+                    stack_metadata=cast(StackMetadata, None),
+                ))
+
+                yield_label = Label()
+                out = out.add_yield_label(yield_label)
+                out = out.add_label(yield_label)
+
+                out = out.add_op(opcode.LoadSynthetic(0))
+
+                restore_bytecode_index = len(out.instructions)
+                out = out.add_op(opcode.DelegateOrRestoreGeneratorState(
+                        state_id=yield_id,
+                        stack_metadata=cast(StackMetadata, None),
+                    ))
+
+                def deferred_processor(finalized_bytecode: 'Bytecode'):
+                    stack_metadata = finalized_bytecode.stack_metadata[save_bytecode_index - 1]
+                    old_save_instructions = finalized_bytecode.instructions[save_bytecode_index]
+                    old_restore_instruction = finalized_bytecode.instructions[restore_bytecode_index]
+
+                    new_instructions = (*finalized_bytecode.instructions[:save_bytecode_index],
+                        Instruction(bytecode_index=save_bytecode_index,
+                                    lineno=old_save_instructions.lineno,
+                                    opcode=opcode.SaveGeneratorState(
+                                        state_id=yield_id,
+                                        stack_metadata=stack_metadata)),
+                        *finalized_bytecode.instructions[save_bytecode_index + 1:restore_bytecode_index],
+                        Instruction(bytecode_index=restore_bytecode_index,
+                                    lineno=old_restore_instruction.lineno,
+                                    opcode=opcode.DelegateOrRestoreGeneratorState(
                                         state_id=yield_id,
                                         stack_metadata=stack_metadata)),
                         *finalized_bytecode.instructions[restore_bytecode_index + 1:],
@@ -1487,8 +1540,8 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         bytecode = bytecode.add_yield_label(yield_label)
         bytecode = bytecode.add_ops(
             opcode.LoadSynthetic(index=0),
-            opcode.RestoreGeneratorState(state_id=yield_index,
-                                         stack_metadata=cast(StackMetadata, None)),
+            opcode.DelegateOrRestoreGeneratorState(state_id=yield_index,
+                                                   stack_metadata=cast(StackMetadata, None)),
             opcode.Pop()
         )
         def _deferred_processor(out_bytecode: Bytecode) -> Bytecode:
@@ -1496,8 +1549,8 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
                                    instructions=(
                                        *out_bytecode.instructions[:4],
                                        Instruction(bytecode_index=4,
-                                                   opcode=opcode.RestoreGeneratorState(state_id=yield_index,
-                                                                                       stack_metadata=out_bytecode.stack_metadata[2]),
+                                                   opcode=opcode.DelegateOrRestoreGeneratorState(state_id=yield_index,
+                                                                                                 stack_metadata=out_bytecode.stack_metadata[2]),
                                                    lineno=out_bytecode.instructions[1].lineno),
                                        *out_bytecode.instructions[5:],
                                    ))
@@ -1593,6 +1646,14 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.LoadConstant(False),
         opcode.LoadLocal(name='_generator_instance'),
         opcode.StoreAttr(name='_generator_finished'),
+
+        opcode.LoadConstant(opcode.GeneratorOperation.NEXT.value),
+        opcode.LoadLocal(name='_generator_instance'),
+        opcode.StoreAttr(name='_operation'),
+
+        opcode.LoadConstant(None),
+        opcode.LoadLocal(name='_generator_instance'),
+        opcode.StoreAttr(name='_sub_generator'),
     )
     init_bytecode = init_bytecode.add_op(opcode.LoadConstant(None))
     init_bytecode = init_bytecode.add_op(opcode.ReturnValue())
@@ -1743,6 +1804,9 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.LoadLocal(name='value'),
         opcode.LoadLocal(name='_generator_instance'),
         opcode.StoreAttr(name='_sent_value'),
+        opcode.LoadConstant(opcode.GeneratorOperation.SEND.value),
+        opcode.LoadLocal(name='_generator_instance'),
+        opcode.StoreAttr(name='_operation'),
         opcode.LoadLocal(name='_generator_instance'),
         opcode.LoadAttr(name='__next__'),
         opcode.CreateCallBuilder(),
@@ -1769,6 +1833,9 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.LoadLocal(name='error'),
         opcode.LoadLocal(name='_generator_instance'),
         opcode.StoreAttr(name='_thrown_value'),
+        opcode.LoadConstant(opcode.GeneratorOperation.THROW.value),
+        opcode.LoadLocal(name='_generator_instance'),
+        opcode.StoreAttr(name='_operation'),
         opcode.LoadLocal(name='_generator_instance'),
         opcode.LoadAttr(name='__next__'),
         opcode.CreateCallBuilder(),
@@ -1787,6 +1854,8 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
             '_saved_state': object,
             '_sent_value': object,
             '_thrown_value': BaseException | None,
+            '_sub_generator': Iterable | None,
+            '_operation': int,
             '_generator_finished': bool,
         },
         class_attribute_defaults=generator_class_attributes
