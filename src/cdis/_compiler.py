@@ -43,7 +43,8 @@ class RenamedVariable:
 @dataclass(frozen=True)
 class Bytecode:
     function_name: str
-    function_type: opcode.MethodType
+    function_type: opcode.FunctionType
+    method_type: opcode.MethodType
     generator_instance_parameter: str | None
     signature: inspect.Signature
     instructions: tuple[Instruction, ...] = ()
@@ -90,10 +91,11 @@ class Bytecode:
     def _evaluate_constant_expr(self, expression: ast.expr):
         from cdis._vm import CDisVM
 
-        # Make MethodType VIRTUAL, since other MethodTypes might augment
+        # Make FunctionType FUNCTION, since other FunctionTypes might augment
         # return and expect the stack to be in a certain state
         new_bytecode = replace(
-            self, function_type=opcode.MethodType.VIRTUAL,
+            self, function_type=opcode.FunctionType.FUNCTION,
+            method_type=opcode.MethodType.VIRTUAL,
             instructions=(), finally_blocks=(), signature=inspect.Signature()
         )
         new_bytecode = new_bytecode.with_statement_opcodes(
@@ -909,7 +911,7 @@ class Bytecode:
                     )
 
                 if len(out.finally_blocks) == 0:
-                    if out.function_type is opcode.MethodType.GENERATOR:
+                    if out.function_type is opcode.FunctionType.GENERATOR:
                         out = out.add_ops(
                             opcode.LoadConstant(True),
                             opcode.LoadSynthetic(index=0),
@@ -933,7 +935,7 @@ class Bytecode:
                 out = out.add_op(opcode.LoadSynthetic(return_value_holder))
                 out = out.free_synthetic()
 
-                if out.function_type is opcode.MethodType.GENERATOR:
+                if out.function_type is opcode.FunctionType.GENERATOR:
                     out = out.add_ops(
                         opcode.LoadConstant(True),
                         opcode.LoadSynthetic(index=0),
@@ -1489,15 +1491,15 @@ def to_bytecode(function: FunctionType) -> Bytecode | opcode.ClassInfo:
                            function.__code__.co_varnames)
 
 
-def is_generator(function_ast: ast.FunctionDef) -> bool:
-    generator_opcodes = ast.Yield, ast.YieldFrom, ast.Await
+def is_generator(function_ast: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    generator_opcodes = ast.Yield, ast.YieldFrom
     for node in ast.walk(function_ast):
         if isinstance(node, generator_opcodes):
             return True
     return False
 
 
-def ast_to_bytecode(function_ast: ast.FunctionDef,
+def ast_to_bytecode(function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
                     signature: inspect.Signature,
                     function_globals: dict[str, object],
                     function_closure: tuple[CellType, ...],
@@ -1517,7 +1519,8 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
 
     bytecode = Bytecode(
         function_name=function_ast.name,
-        function_type=opcode.MethodType.GENERATOR if is_generator_function else opcode.MethodType.for_function_ast(function_ast),
+        function_type=opcode.FunctionType.for_function_ast(function_ast),
+        method_type=opcode.FunctionType.for_function_ast(function_ast),
         generator_instance_parameter='_generator_instance' if is_generator_function else None,
         signature=signature,
         local_names=local_names,
@@ -1586,6 +1589,10 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
     if not is_generator_function:
         return bytecode
 
+    return _create_generator_class_from_bytecode(bytecode, parameter_cells)
+
+
+def _create_generator_class_from_bytecode(bytecode: Bytecode, parameter_cells: frozenset[str]) -> opcode.ClassInfo:
     # Create a class object that jumps to each yield label
     generator_class_attributes: dict[str, Bytecode] = dict()
     for yield_index, yield_label in enumerate(bytecode.yield_labels):
@@ -1594,18 +1601,18 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
                                   # TODO: Generate a unique name incase '_generator_instance' was used already
                                   generator_instance_parameter='_generator_instance',
                                   signature=inspect.Signature([inspect.Parameter(name='_generator_instance',
-                                                                                 kind=inspect.Parameter.POSITIONAL_ONLY,)]),
+                                                                                 kind=inspect.Parameter.POSITIONAL_ONLY, )]),
                                   instructions=(*bytecode.instructions[:2],
                                                 Instruction(
-                                      bytecode_index=2,
-                                      lineno=bytecode.instructions[0].lineno,
-                                      opcode=opcode.JumpTo(target=yield_label),
-                                  ), *bytecode.instructions[3:]))
+                                                    bytecode_index=2,
+                                                    lineno=bytecode.instructions[0].lineno,
+                                                    opcode=opcode.JumpTo(target=yield_label),
+                                                ), *bytecode.instructions[3:]))
         generator_class_attributes[f'_next_{yield_index}'] = method_bytecode
-
     init_bytecode = Bytecode(
         function_name='__init__',
-        function_type=opcode.MethodType.VIRTUAL,
+        function_type=opcode.FunctionType.FUNCTION,
+        method_type=opcode.MethodType.VIRTUAL,
         generator_instance_parameter='_generator_instance',
         signature=inspect.Signature(parameters=[
             inspect.Parameter(name='_generator_instance', kind=inspect.Parameter.POSITIONAL_ONLY),
@@ -1619,7 +1626,6 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
     )
     for synthetic in range(bytecode.synthetic_count):
         init_bytecode = init_bytecode.new_synthetic()
-
     for parameter_cell_var in parameter_cells:
         init_bytecode = init_bytecode.add_op(opcode.LoadLocal(name=parameter_cell_var))
         init_bytecode = init_bytecode.add_op(opcode.StoreCell(name=parameter_cell_var, is_free=False))
@@ -1633,7 +1639,6 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         stack_metadata=bytecode.stack_metadata[2],
     ))
     init_bytecode = init_bytecode.add_op(opcode.Pop())
-
     init_bytecode = init_bytecode.add_ops(
         opcode.LoadConstant(None),
         opcode.LoadLocal(name='_generator_instance'),
@@ -1658,10 +1663,10 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
     init_bytecode = init_bytecode.add_op(opcode.LoadConstant(None))
     init_bytecode = init_bytecode.add_op(opcode.ReturnValue())
     generator_class_attributes['__init__'] = init_bytecode
-
     iter_bytecode = Bytecode(
         function_name='__iter__',
-        function_type=opcode.MethodType.VIRTUAL,
+        function_type=opcode.FunctionType.FUNCTION,
+        method_type=opcode.MethodType.VIRTUAL,
         generator_instance_parameter='_generator_instance',
         signature=inspect.Signature(parameters=[
             inspect.Parameter(name='_generator_instance', kind=inspect.Parameter.POSITIONAL_ONLY)]),
@@ -1676,10 +1681,10 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.LoadLocal(name='_generator_instance'),
         opcode.ReturnValue())
     generator_class_attributes['__iter__'] = iter_bytecode
-
     next_bytecode = Bytecode(
         function_name='__next__',
-        function_type=opcode.MethodType.VIRTUAL,
+        function_type=opcode.FunctionType.FUNCTION,
+        method_type=opcode.MethodType.VIRTUAL,
         generator_instance_parameter='_generator_instance',
         signature=inspect.Signature(parameters=[
             inspect.Parameter(name='_generator_instance', kind=inspect.Parameter.POSITIONAL_ONLY)]),
@@ -1690,7 +1695,6 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         globals=bytecode.globals,
         closure=bytecode.closure
     )
-
     generator_not_finished_label = Label()
     next_bytecode = next_bytecode.add_ops(
         opcode.LoadLocal(name='_generator_instance'),
@@ -1701,9 +1705,7 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.CallWithBuilder(),
         opcode.Raise()
     )
-
     next_bytecode = next_bytecode.add_label(generator_not_finished_label)
-
     next_exception_handler_label = Label()
     next_bytecode = next_bytecode.add_exception_handler(ExceptionHandler(
         exception_class=BaseException,
@@ -1711,12 +1713,10 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         to_label=next_exception_handler_label,
         handler_label=next_exception_handler_label
     ))
-
     next_bytecode = next_bytecode.add_ops(
         opcode.LoadLocal(name='_generator_instance'),
         opcode.LoadAttr(name='_state_id'),
-        opcode.StoreLocal(name='state_id'),)
-
+        opcode.StoreLocal(name='state_id'), )
     # Note: a tuple lookup might be faster
     generator_finished_label = opcode.Label()
     for yield_index, yield_label in enumerate(bytecode.yield_labels):
@@ -1751,7 +1751,6 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.Raise()
     )
     next_bytecode = next_bytecode.add_label(generator_finished_label)
-
     stop_iteration_has_value_label = Label()
     next_bytecode = next_bytecode.add_ops(
         opcode.LoadConstant(True),
@@ -1782,12 +1781,11 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.StoreAttr(name='_generator_finished'),
         opcode.ReraiseLast()
     )
-
     generator_class_attributes['__next__'] = next_bytecode
-
     send_bytecode = Bytecode(
         function_name='send',
-        function_type=opcode.MethodType.VIRTUAL,
+        function_type=opcode.FunctionType.FUNCTION,
+        method_type=opcode.MethodType.VIRTUAL,
         generator_instance_parameter='_generator_instance',
         signature=inspect.Signature(parameters=[
             inspect.Parameter(name='_generator_instance', kind=inspect.Parameter.POSITIONAL_ONLY),
@@ -1813,10 +1811,10 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.CallWithBuilder(),
         opcode.ReturnValue())
     generator_class_attributes['send'] = send_bytecode
-
     throw_bytecode = Bytecode(
         function_name='throw',
-        function_type=opcode.MethodType.VIRTUAL,
+        function_type=opcode.FunctionType.FUNCTION,
+        method_type=opcode.MethodType.VIRTUAL,
         generator_instance_parameter='_generator_instance',
         signature=inspect.Signature(parameters=[
             inspect.Parameter(name='_generator_instance', kind=inspect.Parameter.POSITIONAL_ONLY),
@@ -1842,7 +1840,6 @@ def ast_to_bytecode(function_ast: ast.FunctionDef,
         opcode.CallWithBuilder(),
         opcode.ReturnValue())
     generator_class_attributes['throw'] = throw_bytecode
-
     return opcode.ClassInfo(
         name=f'<generator {bytecode.function_name}>',
         qualname=f'<generator {bytecode.function_name}>',
@@ -1879,7 +1876,8 @@ def lambda_ast_to_bytecode(lambda_ast: ast.Lambda,
 
     bytecode = Bytecode(
         function_name='lambda',
-        function_type=opcode.MethodType.VIRTUAL,
+        function_type=opcode.FunctionType.FUNCTION,
+        method_type=opcode.MethodType.VIRTUAL,
         generator_instance_parameter=None,
         signature=signature,
         local_names=local_names,

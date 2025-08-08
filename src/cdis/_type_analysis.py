@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from functools import cached_property
 
-from ._bytecode import Instruction, StackMetadata, ValueSource, MethodType
+from ._bytecode import Instruction, StackMetadata, ValueSource, FunctionType
 
 if TYPE_CHECKING:
     from _compiler import Bytecode
@@ -79,7 +79,7 @@ def resolve_stack_metadata(bytecode: 'Bytecode') -> tuple[StackMetadata, ...]:
             name: ValueSource(sources=(), value_type=parameter.annotation if parameter.annotation is not inspect._empty else object)
             for (name, parameter) in bytecode.signature.parameters.items()
         },
-        synthetic_variables=((ValueSource((), object)),) if bytecode.function_type is MethodType.GENERATOR else (),
+        synthetic_variables=((ValueSource((), object)),) if bytecode.function_type is FunctionType.GENERATOR else (),
         dead=False
     )
     opcode_index_to_stack_metadata: dict[int, StackMetadata] = {

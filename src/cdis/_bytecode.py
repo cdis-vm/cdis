@@ -1,4 +1,5 @@
 import enum
+import inspect
 import types
 from collections.abc import Callable
 from copy import copy
@@ -3497,11 +3498,39 @@ class Instruction:
         return hash(self.bytecode_index)
 
 
+class FunctionType(Enum):
+    FUNCTION = "function"
+    GENERATOR = "generator"
+    ASYNC_FUNCTION = "async_function"
+    ASYNC_GENERATOR = "async_generator"
+
+    @staticmethod
+    def for_function(function: types.FunctionType) -> "FunctionType":
+        if inspect.isasyncgenfunction(function):
+            return FunctionType.ASYNC_GENERATOR
+        elif inspect.isgeneratorfunction(function):
+            return FunctionType.GENERATOR
+        elif inspect.iscoroutinefunction(function):
+            return FunctionType.ASYNC_FUNCTION
+        else:
+            return FunctionType.FUNCTION
+
+    @staticmethod
+    def for_function_ast(function_ast: ast.FunctionDef | ast.AsyncFunctionDef) -> "FunctionType":
+        from ._compiler import is_generator
+        match function_ast:
+            case ast.FunctionDef():
+                return FunctionType.GENERATOR if is_generator(function_ast) else FunctionType.FUNCTION
+            case ast.AsyncFunctionDef():
+                return FunctionType.ASYNC_GENERATOR if is_generator(function_ast) else FunctionType.ASYNC_FUNCTION
+            case _:
+                raise ValueError(f'Expected ast.FunctionDef or ast.AsyncFunctionDef')
+
+
 class MethodType(Enum):
     VIRTUAL = 'virtual'
     STATIC = 'static'
     CLASS = 'class'
-    GENERATOR = 'generator'
 
     @staticmethod
     def for_function(function: types.FunctionType) -> "MethodType":
@@ -3513,7 +3542,7 @@ class MethodType(Enum):
             return MethodType.VIRTUAL
 
     @staticmethod
-    def for_function_ast(function_ast: ast.FunctionDef) -> "MethodType":
+    def for_function_ast(function_ast: ast.FunctionDef | ast.AsyncFunctionDef) -> "MethodType":
         # Note: this does assume people don't do something like
         # have another decorator call classmethod indirectly or
         # override classmethod/staticmethod

@@ -54,6 +54,57 @@ def assert_bytecode_for_args(
         )
 
 
+def assert_async_bytecode_for_args(
+    function: Callable, *args, trace=False, timeout=3,
+        check_exception_args=True, **kwargs
+):
+    from asyncio import run
+
+    vm = CDisVM()
+    bytecode = to_bytecode(cast(FunctionType, function))
+    async_class = bytecode.as_class(vm=vm, trace=trace, timeout=timeout)
+    expected_error = None
+    try:
+        expected = run(function(*args, **kwargs))
+    except Exception as e:
+        expected = None
+        expected_error = e
+    try:
+        actual = run(async_class(*args, **kwargs))
+    except Exception as e:
+        if expected_error is not None:
+            if expected_error.__class__ != e.__class__ or (check_exception_args and expected_error.args != e.args):
+                raise AssertionError(
+                    f"Expected error {expected_error!r} but a different exception was raised {e!r}\n"
+                    f"Stack Trace: {vm.stack_trace}\n"
+                    f"Source:\n{inspect.getsource(function)}\n"
+                    f"Bytecode:\n{bytecode}\n\n"
+                )
+            else:
+                return
+        raise AssertionError(
+            f"Expected {expected!r} but an exception was raised {e!r}\n"
+            f"Stack Trace: {vm.stack_trace}\n"
+            f"Source:\n{inspect.getsource(function)}\n"
+            f"Bytecode:\n{bytecode}\n\n"
+        ) from e
+
+    if expected_error is not None:
+        raise AssertionError(
+            f"Expected error {expected_error!r} but got result {actual!r}\n"
+            f"Stack Trace: {vm.stack_trace}\n"
+            f"Source:\n{inspect.getsource(function)}\n"
+            f"Bytecode:\n{bytecode}\n\n"
+        )
+    elif expected != actual:
+        raise AssertionError(
+            f"Expected {expected!r} but got {actual!r}\n"
+            f"Stack Trace: {vm.stack_trace}\n"
+            f"Source:\n{inspect.getsource(function)}\n"
+            f"Bytecode:\n{bytecode}\n\n"
+        )
+
+
 @dataclass(frozen=True)
 class Sent:
     value: object
