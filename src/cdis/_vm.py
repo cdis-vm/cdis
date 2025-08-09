@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from types import CellType
+from typing import Mapping
 
 from ._compiler import Bytecode, ExceptionHandler
 
@@ -18,6 +19,23 @@ class Frame:
     globals: dict[str, object]
     exception_handlers: tuple[ExceptionHandler, ...]
     synthetic_variables: list[object]
+
+    @property
+    def locals(self) -> Mapping[str, object]:
+        """Returns a view of merging variables and closure"""
+        from collections import ChainMap, UserDict
+        class ClosureDict(UserDict):
+            def __getitem__(_, key):
+                return self.closure[key].cell_contents
+            def __setitem__(_, key, value):
+                self.closure[key].cell_contents = value
+            def __delitem__(_, key):
+                self.closure[key].cell_contents = None
+            def __len__(_):
+                return len(self.closure)
+
+        return ChainMap(self.variables,
+                        ClosureDict())
 
     @staticmethod
     def new_frame(vm: "CDisVM") -> "Frame":

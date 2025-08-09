@@ -1033,3 +1033,51 @@ def test_async():
 
     assert_async_bytecode_for_args(task, 0)
     assert_async_bytecode_for_args(task, 1)
+
+
+def test_import():
+    def sqrt(x):
+        import math
+        return int(math.sqrt(x))
+
+    assert_bytecode_for_args(sqrt, 4)
+    assert_bytecode_for_args(sqrt, 9)
+
+
+def test_import_as():
+    def sqrt(x):
+        import math as m
+        return int(m.sqrt(x))
+
+    assert_bytecode_for_args(sqrt, 4)
+    assert_bytecode_for_args(sqrt, 9)
+
+
+def test_multi_import():
+    def sqrt(x):
+        import math, string
+        return string.Formatter().format("{}", int(math.sqrt(x)))
+
+    assert_bytecode_for_args(sqrt, 4)
+    assert_bytecode_for_args(sqrt, 9)
+
+
+def test_import_from():
+    def sqrt(x):
+        from math import sqrt as square_root
+        return int(square_root(x))
+
+    assert_bytecode_for_args(sqrt, 4)
+    assert_bytecode_for_args(sqrt, 9)
+
+
+def test_import_path():
+    def is_iterable(asserted):
+        import collections.abc
+        return isinstance(asserted, collections.abc.Iterable)
+
+    from collections.abc import Collection, Iterable, KeysView
+    assert_bytecode_for_args(is_iterable, Collection)
+    assert_bytecode_for_args(is_iterable, Iterable)
+    assert_bytecode_for_args(is_iterable, KeysView)
+    assert_bytecode_for_args(is_iterable, 10)

@@ -1472,6 +1472,44 @@ class Nop(Opcode):
 
 
 @dataclass(frozen=True)
+class ImportModule(Opcode):
+    """Push the module with the given name to the stack.
+    The module is loaded and executed if it is not loaded yet.
+    Raises ImportError if the module cannot be found.
+
+    Used to implement import statements.
+
+    Notes
+    -----
+        | ImportModule
+        | Stack Effect: +1
+        | Prior: ...
+        | After: ..., module
+
+    Examples
+    --------
+    >>> import cdis
+    ImportModule(name='cdis', level=0, from_list=())
+    """
+    name: str
+    level: int
+    from_list: tuple[str, ...]
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        from types import ModuleType
+        return previous_stack_metadata.push(ValueSource(sources=(instruction,),
+                                                        value_type=ModuleType)),
+
+    def execute(self, frame: "Frame") -> None:
+        frame.stack.append(__import__(self.name, frame.globals, frame.locals, self.from_list, self.level))
+
+
+@dataclass(frozen=True)
 class Dup(Opcode):
     """Duplicates the value on top of stack.
 

@@ -1343,6 +1343,40 @@ class Bytecode:
                 out = out.with_assignment_opcodes(ast.Name(id=func_def.name, ctx=ast.Store), renames)
                 return out
 
+            case ast.Import(names=aliases):
+                out = self
+                for alias in aliases:
+                    out = out.add_statement(statement,
+                                             opcode.ImportModule(
+                                                 name=alias.name,
+                                                 level=0,
+                                                 from_list=()
+                                             ))
+                    asname = alias.name.split('.')[0]
+                    if alias.asname is not None:
+                        asname = alias.asname
+                    out = out.with_assignment_opcodes(ast.Name(id=asname, ctx=ast.Store), renames)
+                return out
+
+            case ast.ImportFrom(module=module, names=aliases, level=level):
+                out = self
+                out = out.add_statement(statement,
+                                        opcode.ImportModule(
+                                            name=module,
+                                            level=level,
+                                            from_list=tuple(alias.name for alias in aliases),
+                                        ))
+                for alias in aliases:
+                    asname = alias.asname if alias.asname is not None else alias.name
+                    out = out.add_ops(
+                        opcode.Dup(),
+                        opcode.LoadAttr(name=alias.name,),
+                    )
+                    out = out.with_assignment_opcodes(ast.Name(id=asname, ctx=ast.Store), renames)
+                out = out.add_op(opcode.Pop())
+                return out
+
+
             case _:
                 raise NotImplementedError(
                     f"Not implemented statement: {type(statement)}"
