@@ -1865,6 +1865,7 @@ class DelegateOrRestoreGeneratorState(Opcode):
                         out = sub_generator.throw(thrown_value)
                     case _:
                         raise SystemError(f'Unhandled operation {operation} for generator')
+
                 frame.stack.append(out)
                 YieldValue().execute(frame)
             except StopIteration as result:
@@ -3262,6 +3263,58 @@ class GetIterator(Opcode):
 
 
 @dataclass(frozen=True)
+class GetAwaitableIterator(Opcode):
+    """Pops off the top of stack and gets its awaitable iterator.
+
+    Notes
+    -----
+        | GetAwaitableIterator
+        | Stack Effect: -1
+        | Prior: ..., awaitable
+        | After: ..., iterator
+
+    Examples
+    --------
+    >>> await task
+    LoadLocal(name="task")
+    GetAwaitableIterator()
+    LoadSynthetic(index=0)
+    SetGeneratorDelegate()
+    LoadSynthetic(index=0)
+    SaveGeneratorState(StackMetadata(stack=1, variables=(), closure=(), synthetic_variables=1))
+    LoadSynthetic(index=0)
+    DelegateOrRestoreGeneratorState(StackMetadata(stack=1, variables=(), closure=(), synthetic_variables=1))
+    Pop()
+    """
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1).push(
+            ValueSource(sources=(instruction,), value_type=Iterator)
+        ),
+
+    def execute(self, frame: "Frame") -> None:
+        item = frame.stack.pop()
+        await_function = getattr(type(item), '__await__', None)
+        if await_function is None:
+            from types import GeneratorType
+            from inspect import CO_ITERABLE_COROUTINE
+
+            # CPython generator-based coroutines do not have an __await__ attribute!
+            # need to manually check their flags
+            if isinstance(item, GeneratorType) and item.gi_code.co_flags & CO_ITERABLE_COROUTINE:
+                frame.stack.append(item)
+            else:
+                raise TypeError(f"object {item} can't be used in 'await' expression")
+        else:
+            frame.stack.append(await_function(item))
+
+
+@dataclass(frozen=True)
 class GetNextElseJumpTo(Opcode):
     """Gets the next element of the iterator at top of stack. If next raises `StopIteration`, jump to target instead.
 
@@ -3501,6 +3554,7 @@ class Instruction:
 class FunctionType(Enum):
     FUNCTION = "function"
     GENERATOR = "generator"
+    COROUTINE_GENERATOR = "coroutine_generator"
     ASYNC_FUNCTION = "async_function"
     ASYNC_GENERATOR = "async_generator"
 
@@ -3509,7 +3563,10 @@ class FunctionType(Enum):
         if inspect.isasyncgenfunction(function):
             return FunctionType.ASYNC_GENERATOR
         elif inspect.isgeneratorfunction(function):
-            return FunctionType.GENERATOR
+            if function.__code__.co_flags & inspect.CO_ITERABLE_COROUTINE:
+                return FunctionType.COROUTINE_GENERATOR
+            else:
+                return FunctionType.GENERATOR
         elif inspect.iscoroutinefunction(function):
             return FunctionType.ASYNC_FUNCTION
         else:
@@ -3520,7 +3577,10 @@ class FunctionType(Enum):
         from ._compiler import is_generator
         match function_ast:
             case ast.FunctionDef():
-                return FunctionType.GENERATOR if is_generator(function_ast) else FunctionType.FUNCTION
+                if is_generator(function_ast):
+                    # TODO: determine if it a coroutine generator from decorator_list
+                    return FunctionType.GENERATOR
+                return FunctionType.FUNCTION
             case ast.AsyncFunctionDef():
                 return FunctionType.ASYNC_GENERATOR if is_generator(function_ast) else FunctionType.ASYNC_FUNCTION
             case _:

@@ -688,6 +688,57 @@ class Bytecode:
                 out = out.add_deferred_processor(deferred_processor)
                 return out
 
+            case ast.Await(value=value):
+                out = self.with_expression_opcodes(value, renames)
+                out = out.add_op(opcode.GetAwaitableIterator())
+                yield_id = out.current_yield
+                out = out.add_op(opcode.LoadSynthetic(0))
+                out = out.add_op(opcode.SetGeneratorDelegate())
+
+                out = out.add_op(opcode.LoadConstant(None))
+                out = out.add_op(opcode.LoadSynthetic(0))
+                save_bytecode_index = len(out.instructions)
+                out = out.add_op(opcode.SaveGeneratorState(
+                    state_id=yield_id,
+                    stack_metadata=cast(StackMetadata, None),
+                ))
+
+                yield_label = Label()
+                out = out.add_yield_label(yield_label)
+                out = out.add_label(yield_label)
+
+                out = out.add_op(opcode.LoadSynthetic(0))
+
+                restore_bytecode_index = len(out.instructions)
+                out = out.add_op(opcode.DelegateOrRestoreGeneratorState(
+                        state_id=yield_id,
+                        stack_metadata=cast(StackMetadata, None),
+                    ))
+
+                def deferred_processor(finalized_bytecode: 'Bytecode'):
+                    stack_metadata = finalized_bytecode.stack_metadata[save_bytecode_index - 1]
+                    old_save_instructions = finalized_bytecode.instructions[save_bytecode_index]
+                    old_restore_instruction = finalized_bytecode.instructions[restore_bytecode_index]
+
+                    new_instructions = (*finalized_bytecode.instructions[:save_bytecode_index],
+                        Instruction(bytecode_index=save_bytecode_index,
+                                    lineno=old_save_instructions.lineno,
+                                    opcode=opcode.SaveGeneratorState(
+                                        state_id=yield_id,
+                                        stack_metadata=stack_metadata)),
+                        *finalized_bytecode.instructions[save_bytecode_index + 1:restore_bytecode_index],
+                        Instruction(bytecode_index=restore_bytecode_index,
+                                    lineno=old_restore_instruction.lineno,
+                                    opcode=opcode.DelegateOrRestoreGeneratorState(
+                                        state_id=yield_id,
+                                        stack_metadata=stack_metadata)),
+                        *finalized_bytecode.instructions[restore_bytecode_index + 1:],
+                    )
+                    return replace(finalized_bytecode, instructions=new_instructions)
+
+                out = out.add_deferred_processor(deferred_processor)
+                return out
+
             case _:
                 raise NotImplementedError(
                     f"Not implemented statement: {type(expression)}"
@@ -910,8 +961,15 @@ class Bytecode:
                         ast.Constant(None, lineno=statement.lineno), renames
                     )
 
+                match out.function_type:
+                    case opcode.FunctionType.GENERATOR | opcode.FunctionType.ASYNC_FUNCTION | opcode.FunctionType.COROUTINE_GENERATOR | opcode.FunctionType.ASYNC_GENERATOR:
+                        is_generator_or_async_function = True
+                    case opcode.FunctionType.FUNCTION:
+                        is_generator_or_async_function = False
+                    case _:
+                        raise RuntimeError(f'Unknown function type {out.function_type}')
                 if len(out.finally_blocks) == 0:
-                    if out.function_type is opcode.FunctionType.GENERATOR:
+                    if is_generator_or_async_function:
                         out = out.add_ops(
                             opcode.LoadConstant(True),
                             opcode.LoadSynthetic(index=0),
@@ -935,7 +993,7 @@ class Bytecode:
                 out = out.add_op(opcode.LoadSynthetic(return_value_holder))
                 out = out.free_synthetic()
 
-                if out.function_type is opcode.FunctionType.GENERATOR:
+                if is_generator_or_async_function:
                     out = out.add_ops(
                         opcode.LoadConstant(True),
                         opcode.LoadSynthetic(index=0),
@@ -1491,6 +1549,12 @@ def to_bytecode(function: FunctionType) -> Bytecode | opcode.ClassInfo:
                            function.__code__.co_varnames)
 
 
+def is_generator_or_async(function_ast: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    if isinstance(function_ast, ast.AsyncFunctionDef):
+        return True
+    return is_generator(function_ast)
+
+
 def is_generator(function_ast: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     generator_opcodes = ast.Yield, ast.YieldFrom
     for node in ast.walk(function_ast):
@@ -1509,8 +1573,8 @@ def ast_to_bytecode(function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
     free_vars = free_names
     cell_names = frozenset(cell_names + free_vars)
     local_names = frozenset(set(variable_names) - set(cell_names))
-    is_generator_function = is_generator(function_ast)
-    if is_generator_function:
+    is_generator_or_async_function = is_generator_or_async(function_ast)
+    if is_generator_or_async_function:
         local_names |= frozenset({'_generator_instance'})
 
     closure_dict = {}
@@ -1520,8 +1584,8 @@ def ast_to_bytecode(function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
     bytecode = Bytecode(
         function_name=function_ast.name,
         function_type=opcode.FunctionType.for_function_ast(function_ast),
-        method_type=opcode.FunctionType.for_function_ast(function_ast),
-        generator_instance_parameter='_generator_instance' if is_generator_function else None,
+        method_type=opcode.MethodType.for_function_ast(function_ast),
+        generator_instance_parameter='_generator_instance' if is_generator_or_async_function else None,
         signature=signature,
         local_names=local_names,
         cell_names=cell_names,
@@ -1529,7 +1593,7 @@ def ast_to_bytecode(function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
         globals=function_globals,
         closure=closure_dict,
     )
-    if is_generator_function:
+    if is_generator_or_async_function:
         # Make first synthetic store the generator object
         bytecode = bytecode.new_synthetic()
         bytecode = bytecode.add_ops(
@@ -1564,7 +1628,7 @@ def ast_to_bytecode(function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
                                                               variable_names[:len(signature.parameters)]}
 
     for parameter_cell_var in parameter_cells:
-        if not is_generator_function:
+        if not is_generator_or_async_function:
             bytecode = bytecode.add_op(opcode.LoadLocal(name=parameter_cell_var))
             bytecode = bytecode.add_op(opcode.StoreCell(name=parameter_cell_var, is_free=False))
         closure_dict[parameter_cell_var] = CellType()
@@ -1586,7 +1650,7 @@ def ast_to_bytecode(function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
     for deferred_processor in deferred_processors:
         bytecode = deferred_processor(bytecode)
 
-    if not is_generator_function:
+    if not is_generator_or_async_function:
         return bytecode
 
     return _create_generator_class_from_bytecode(bytecode, parameter_cells)
@@ -1680,7 +1744,20 @@ def _create_generator_class_from_bytecode(bytecode: Bytecode, parameter_cells: f
     iter_bytecode = iter_bytecode.add_ops(
         opcode.LoadLocal(name='_generator_instance'),
         opcode.ReturnValue())
-    generator_class_attributes['__iter__'] = iter_bytecode
+
+    match bytecode.function_type:
+        case opcode.FunctionType.GENERATOR:
+            generator_class_attributes['__iter__'] = iter_bytecode
+        case opcode.FunctionType.ASYNC_GENERATOR:
+            generator_class_attributes['__aiter__'] = iter_bytecode
+        case opcode.FunctionType.COROUTINE_GENERATOR | opcode.FunctionType.ASYNC_FUNCTION:
+            #  Note: technically await should return a different object,
+            #        but you cannot reuse an already run-coroutine
+            generator_class_attributes['__iter__'] = iter_bytecode
+            generator_class_attributes['__await__'] = iter_bytecode
+        case _:
+            raise RuntimeError(f'Unknown generator type {bytecode.function_type}')
+
     next_bytecode = Bytecode(
         function_name='__next__',
         function_type=opcode.FunctionType.FUNCTION,
@@ -1781,7 +1858,15 @@ def _create_generator_class_from_bytecode(bytecode: Bytecode, parameter_cells: f
         opcode.StoreAttr(name='_generator_finished'),
         opcode.ReraiseLast()
     )
-    generator_class_attributes['__next__'] = next_bytecode
+
+    match bytecode.function_type:
+        case opcode.FunctionType.GENERATOR | opcode.FunctionType.ASYNC_FUNCTION | opcode.FunctionType.COROUTINE_GENERATOR:
+            generator_class_attributes['__next__'] = next_bytecode
+        case opcode.FunctionType.ASYNC_GENERATOR:
+            generator_class_attributes['__anext__'] = next_bytecode
+        case _:
+            raise RuntimeError(f'Unknown generator type {bytecode.function_type}')
+
     send_bytecode = Bytecode(
         function_name='send',
         function_type=opcode.FunctionType.FUNCTION,
@@ -1810,7 +1895,15 @@ def _create_generator_class_from_bytecode(bytecode: Bytecode, parameter_cells: f
         opcode.CreateCallBuilder(),
         opcode.CallWithBuilder(),
         opcode.ReturnValue())
-    generator_class_attributes['send'] = send_bytecode
+
+    match bytecode.function_type:
+        case opcode.FunctionType.GENERATOR | opcode.FunctionType.ASYNC_FUNCTION | opcode.FunctionType.COROUTINE_GENERATOR:
+            generator_class_attributes['send'] = send_bytecode
+        case opcode.FunctionType.ASYNC_GENERATOR:
+            generator_class_attributes['asend'] = send_bytecode
+        case _:
+            raise RuntimeError(f'Unknown generator type {bytecode.function_type}')
+
     throw_bytecode = Bytecode(
         function_name='throw',
         function_type=opcode.FunctionType.FUNCTION,
@@ -1839,7 +1932,15 @@ def _create_generator_class_from_bytecode(bytecode: Bytecode, parameter_cells: f
         opcode.CreateCallBuilder(),
         opcode.CallWithBuilder(),
         opcode.ReturnValue())
-    generator_class_attributes['throw'] = throw_bytecode
+
+    match bytecode.function_type:
+        case opcode.FunctionType.GENERATOR | opcode.FunctionType.ASYNC_FUNCTION | opcode.FunctionType.COROUTINE_GENERATOR:
+            generator_class_attributes['throw'] = throw_bytecode
+        case opcode.FunctionType.ASYNC_GENERATOR:
+            generator_class_attributes['athrow'] = throw_bytecode
+        case _:
+            raise RuntimeError(f'Unknown generator type {bytecode.function_type}')
+
     return opcode.ClassInfo(
         name=f'<generator {bytecode.function_name}>',
         qualname=f'<generator {bytecode.function_name}>',

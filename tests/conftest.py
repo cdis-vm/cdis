@@ -58,11 +58,13 @@ def assert_async_bytecode_for_args(
     function: Callable, *args, trace=False, timeout=3,
         check_exception_args=True, **kwargs
 ):
+    import inspect
     from asyncio import run
 
     vm = CDisVM()
     bytecode = to_bytecode(cast(FunctionType, function))
     async_class = bytecode.as_class(vm=vm, trace=trace, timeout=timeout)
+
     expected_error = None
     try:
         expected = run(function(*args, **kwargs))
@@ -70,7 +72,10 @@ def assert_async_bytecode_for_args(
         expected = None
         expected_error = e
     try:
-        actual = run(async_class(*args, **kwargs))
+        async def actual_wrapper():
+            return await async_class(*args, **kwargs)
+
+        actual = run(actual_wrapper())
     except Exception as e:
         if expected_error is not None:
             if expected_error.__class__ != e.__class__ or (check_exception_args and expected_error.args != e.args):

@@ -1,5 +1,5 @@
 from .conftest import (
-    assert_bytecode_for_args, assert_generator_bytecode_for_args,
+    assert_bytecode_for_args, assert_generator_bytecode_for_args, assert_async_bytecode_for_args,
     Skip, Sent, Thrown)
 
 
@@ -1014,3 +1014,22 @@ def test_subgenerator_throw():
         Thrown(NameError()),
         Skip()
     ))
+
+
+def test_async():
+    from types import coroutine
+    from asyncio import sleep
+
+    @coroutine
+    def generator(x):
+        total=0
+        for i in range(x):
+            total = total + i
+            yield from sleep(total)
+        return total
+
+    async def task(count):
+        return await generator(count)
+
+    assert_async_bytecode_for_args(task, 0)
+    assert_async_bytecode_for_args(task, 1)
