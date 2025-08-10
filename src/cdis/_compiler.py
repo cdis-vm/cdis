@@ -936,24 +936,24 @@ class Bytecode:
             case ast.Pass():
                 return self.add_statement(statement, opcode.Nop())
 
-            case ast.Global(names):
+            case ast.Global(names=names):
                 out = self
                 for name in names:
                     out = out.add_global(name)
                 return out
 
-            case ast.Nonlocal(names):
+            case ast.Nonlocal(names=names):
                 out = self
                 for name in names:
                     out = out.add_cell(name)
                 return out
 
-            case ast.Expr(value):
+            case ast.Expr(value=value):
                 out = self.with_expression_opcodes(value, renames)
                 out = out.add_op(opcode.Pop())
                 return out
 
-            case ast.Return(value):
+            case ast.Return(value=value):
                 if value is not None:
                     out = self.with_expression_opcodes(value, renames)
                 else:
@@ -1001,7 +1001,7 @@ class Bytecode:
                     )
                 return out.add_statement(statement, opcode.ReturnValue())
 
-            case ast.Raise(exc, cause):
+            case ast.Raise(exc=exc, cause=cause):
                 if exc is None:
                     return self.add_op(opcode.ReraiseLast())
                 out = self.with_expression_opcodes(exc, renames)
@@ -1010,7 +1010,7 @@ class Bytecode:
                 out = out.with_expression_opcodes(cause, renames)
                 return out.add_op(opcode.RaiseWithCause())
 
-            case ast.Try(body, handlers, orelse, finalbody):
+            case ast.Try(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody):
                 try_start = Label()
                 try_end = Label()
                 except_finally = Label()
@@ -1376,6 +1376,17 @@ class Bytecode:
                 out = out.add_op(opcode.Pop())
                 return out
 
+            case ast.Match(subject=subject, cases=cases):
+                out = self.with_expression_opcodes(subject, renames)
+                next_case_label = Label()
+                match_end_label = Label()
+                for case in cases:
+                    out = out.with_match_opcodes(case, next_case_label, match_end_label, renames)
+                    out = out.add_label(next_case_label)
+                    next_case_label = Label()
+                out = out.add_op(opcode.Pop())
+                out = out.add_label(match_end_label)
+                return out
 
             case _:
                 raise NotImplementedError(
@@ -1384,6 +1395,176 @@ class Bytecode:
 
         raise RuntimeError(
             f"Missing return in case {type(statement)} in with_statement_opcodes"
+        )
+
+    def with_match_opcodes(self, match_case: ast.match_case, next_case_label: Label, match_end_label: Label, renames: dict[str, RenamedVariable]) -> 'Bytecode':
+        out = self.with_match_pattern_opcodes(match_case.pattern, True, next_case_label, renames)
+        if match_case.guard is not None:
+            out = out.with_expression_opcodes(match_case.guard, renames)
+            out = out.add_op(opcode.IfFalse(target=next_case_label))
+        for statement in match_case.body:
+            out = out.with_statement_opcodes(statement, renames)
+        out = out.add_op(opcode.JumpTo(match_end_label))
+        return out
+
+    def with_match_pattern_opcodes(self, pattern: ast.pattern, should_pop: bool, next_case_label: Label, renames: dict[str, RenamedVariable]):
+        match pattern:
+            case ast.MatchValue(value=value):
+                out = self.add_ops(
+                    opcode.Dup(),
+                    opcode.LoadConstant(constant=self._evaluate_constant_expr(value)),
+                    opcode.BinaryOp(operator=opcode.BinaryOperator.Eq),
+                    opcode.IfFalse(target=next_case_label),
+                )
+                if should_pop:
+                    out = out.add_op(opcode.Pop())
+                return out
+            case ast.MatchSingleton(value=value):
+                out = self.add_ops(
+                    opcode.Dup(),
+                    opcode.LoadConstant(constant=value),
+                    opcode.IsSameAs(negate=False),
+                    opcode.IfFalse(target=next_case_label),
+                )
+                if should_pop:
+                    out = out.add_op(opcode.Pop())
+                return out
+            case ast.MatchSequence(patterns=subpatterns):
+                has_star = any(isinstance(subpattern, ast.MatchStar) for subpattern in subpatterns)
+                expected_length = len(subpatterns) - 1 if has_star else len(subpatterns)
+                star_index = 0
+                if has_star:
+                    for index, subpattern in enumerate(subpatterns):
+                        if isinstance(subpattern, ast.MatchStar):
+                            star_index = index
+                            break
+                    before_count = star_index
+                    after_count = expected_length - before_count
+                else:
+                    before_count = expected_length
+                    after_count = 0
+                is_exact = not has_star
+                out = self.add_ops(
+                    opcode.MatchSequence(
+                        length=expected_length,
+                        is_exact=is_exact,
+                        target=next_case_label,
+                    ),
+                    opcode.Dup(),
+                    opcode.UnpackElements(
+                        before_count=before_count,
+                        after_count=after_count,
+                        has_extras=has_star
+                    )
+                )
+                element_values = []
+                for i in range(len(subpatterns)):
+                    out = out.new_synthetic()
+                    element_values.append(out.current_synthetic)
+                    out = out.add_op(opcode.StoreSynthetic(index=element_values[-1]))
+
+                match_failed_label = Label()
+                match_success_label = Label()
+                for i in range(len(subpatterns)):
+                    out = out.add_op(opcode.LoadSynthetic(index=element_values[i]))
+                    out = out.with_match_pattern_opcodes(subpatterns[i], True, match_failed_label, renames)
+
+                if should_pop:
+                    out = out.add_op(opcode.Pop())
+
+                out = out.add_op(opcode.JumpTo(target=match_success_label))
+                out = out.add_label(match_failed_label)
+                out = out.add_ops(
+                    opcode.Pop(),
+                    opcode.JumpTo(target=next_case_label)
+                )
+                out = out.add_label(match_success_label)
+
+                for i in range(len(subpatterns)):
+                    out = out.free_synthetic()
+                return out
+            case ast.MatchMapping(keys=keys, patterns=subpatterns, rest=extras_name):
+                has_extras = extras_name is not None
+                # keys must be literals, so we can evaluate them
+                const_keys = tuple(self._evaluate_constant_expr(key) for key in keys)
+                out = self.add_ops(
+                    opcode.MatchMapping(
+                        keys=const_keys,
+                        target=next_case_label,
+                    ),
+                    opcode.Dup(),
+                    opcode.UnpackMapping(
+                        keys=const_keys,
+                        has_extras=has_extras,
+                    ),
+                )
+
+                if has_extras:
+                    out = out.with_assignment_opcodes(ast.Name(id=extras_name, ctx=ast.Store()), renames)
+
+                key_values = []
+                match_failed_label = Label()
+                match_success_label = Label()
+                for _ in subpatterns:
+                    out = out.new_synthetic()
+                    key_values.append(out.current_synthetic)
+                    out = out.add_op(opcode.StoreSynthetic(index=key_values[-1]))
+
+                for index, subpattern in enumerate(subpatterns):
+                    out = out.add_op(opcode.LoadSynthetic(index=key_values[index]))
+                    out = out.with_match_pattern_opcodes(subpattern, True, match_failed_label, renames)
+
+                for _ in subpatterns:
+                    out = out.free_synthetic()
+
+                if should_pop:
+                    out = out.add_op(opcode.Pop())
+                out = out.add_op(opcode.JumpTo(target=match_success_label))
+                out = out.add_label(match_failed_label)
+                out = out.add_ops(
+                    opcode.Pop(),
+                    opcode.JumpTo(target=next_case_label)
+                )
+                out = out.add_label(match_success_label)
+                return out
+            case ast.MatchClass(cls=matched_class, patterns=subpatterns, kwd_patterns=kwd_subpatterns, kwd_attrs=kwd_attrs):
+                # TODO
+                raise NotImplementedError()
+            case ast.MatchStar(name=name):
+                out = self
+                if name is not None:
+                    out = out.with_assignment_opcodes(ast.Name(id=name, ctx=ast.Store()), renames)
+                else:
+                    out = out.add_op(opcode.Pop())
+                return out
+            case ast.MatchAs(pattern=subpattern, name=name):
+                out = self
+                if subpattern is not None:
+                    out = out.with_match_pattern_opcodes(subpattern, False, next_case_label, renames)
+                if name is not None:
+                    out = out.with_assignment_opcodes(ast.Name(id=name, ctx=ast.Store()), renames)
+                else:
+                    out = out.add_op(opcode.Pop())
+                return out
+            case ast.MatchOr(patterns=subpatterns):
+                out = self
+                next_pattern_label = Label()
+                pattern_end_label = Label()
+                for subpattern in subpatterns:
+                    out = out.with_match_pattern_opcodes(subpattern, should_pop, next_pattern_label, renames)
+                    out = out.add_op(opcode.JumpTo(pattern_end_label))
+                    out = out.add_label(next_pattern_label)
+                    next_pattern_label = Label()
+                out = out.add_label(next_pattern_label)
+                out = out.add_op(opcode.JumpTo(next_case_label))
+                out = out.add_label(pattern_end_label)
+                return out
+            case _:
+                raise NotImplementedError(
+                    f"Not implemented pattern: {type(pattern)}"
+                )
+        raise RuntimeError(
+            f"Missing return in case {type(pattern)} in with_match_pattern_opcodes"
         )
 
     def _create_inner_function(self, func_def: ast.FunctionDef) -> InnerFunction:

@@ -1081,3 +1081,59 @@ def test_import_path():
     assert_bytecode_for_args(is_iterable, Iterable)
     assert_bytecode_for_args(is_iterable, KeysView)
     assert_bytecode_for_args(is_iterable, 10)
+
+
+def test_match_sequence():
+    def where_is_0(items):
+        match items:
+            case [0, 0]:
+                return 2
+            case [0, _]:
+                return 0
+            case [_, 0]:
+                return 1
+            case [_, _]:
+                return -1
+            case _:
+                raise ValueError()
+
+    assert_bytecode_for_args(where_is_0, (0, 0))
+    assert_bytecode_for_args(where_is_0, (1, 0))
+    assert_bytecode_for_args(where_is_0, (0, 1))
+    assert_bytecode_for_args(where_is_0, (1, 1))
+    assert_bytecode_for_args(where_is_0, 10)
+
+
+def test_match_mapping():
+    def where_is_0(items):
+        match items:
+            case {'a': 0, 'b': 0}:
+                return 'ab'
+            case {'a': 0}:
+                return 'a'
+            case {'b': 0}:
+                return 'b'
+            case {}:
+                return ''
+            case _:
+                raise ValueError()
+
+    assert_bytecode_for_args(where_is_0, {'a': 0, 'b': 0})
+    assert_bytecode_for_args(where_is_0, {'a': 0, 'b': 1})
+    assert_bytecode_for_args(where_is_0, {'a': 1, 'b': 0})
+    assert_bytecode_for_args(where_is_0, {'a': 0})
+    assert_bytecode_for_args(where_is_0, 10)
+
+
+def test_match_or():
+    def is_even(number):
+        match number:
+            case 0 | 2 | 4 | 8:
+                return True
+            case 1 | 3 | 5 | 7 | 9:
+                return False
+            case _:
+                raise ValueError('Value is not a true number!')
+
+    for i in range(11):
+        assert_bytecode_for_args(is_even, i)

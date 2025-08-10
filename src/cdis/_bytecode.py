@@ -1981,11 +1981,7 @@ class ReraiseLast(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        return StackMetadata(
-            stack=(),
-            variables={},
-            synthetic_variables=(),
-        ),
+        return ()
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -2018,11 +2014,7 @@ class Raise(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        return StackMetadata(
-            stack=(),
-            variables={},
-            synthetic_variables=(),
-        ),
+        return ()
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -2056,11 +2048,7 @@ class RaiseWithCause(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        return StackMetadata(
-            stack=(),
-            variables={},
-            synthetic_variables=(),
-        ),
+        return ()
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return ()
@@ -2108,7 +2096,7 @@ class IfTrue(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        return previous_stack_metadata.pop(1),
+        return previous_stack_metadata.pop(1), previous_stack_metadata.pop(1)
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return instruction.bytecode_index + 1, self.target.index
@@ -2148,13 +2136,168 @@ class IfFalse(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        return previous_stack_metadata.pop(1),
+        return previous_stack_metadata.pop(1), previous_stack_metadata.pop(1)
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return instruction.bytecode_index + 1, self.target.index
 
     def execute(self, frame: "Frame") -> None:
         if not frame.stack.pop():
+            frame.bytecode_index = self.target.index - 1
+
+
+@dataclass(frozen=True)
+class MatchInstanceOf(Opcode):
+    """Top of stack is the checked type, and the item below it is the quried object.
+    Pop only the checked type off the stack. Jump to target if the object is not an instance of
+    the checked type.
+
+    Notes
+    -----
+        | MatchInstanceOf
+        | Stack Effect: -1
+        | Prior: ..., query, type
+        | After: ..., query
+
+    Examples
+    --------
+    >>> match query:
+    ...     case MyType():
+    ...         pass
+    LoadLocal(name="query")
+    MatchInstanceOf(target=no_match)
+    Pop()
+    JumpTo(target=end_match)
+    label no_match
+    Pop()
+    label end_match
+    """
+
+    target: Label
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(1), previous_stack_metadata.pop(1)
+
+    def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
+        return instruction.bytecode_index + 1, self.target.index
+
+    def execute(self, frame: "Frame") -> None:
+        checked_type = frame.stack.pop()
+        query = frame.stack[-1]
+        if not isinstance(query, checked_type):
+            frame.bytecode_index = self.target.index - 1
+
+
+@dataclass(frozen=True)
+class MatchSequence(Opcode):
+    """Top of stack is the queried object.
+    Do not pop it off the check, and check if it is a sequence with at least
+    length elements (exact if is_exact is True).
+    If it not a sequence of at least the specified length, jump to target.
+
+    Notes
+    -----
+        | MatchSequence
+        | Stack Effect: 0
+        | Prior: ..., query
+        | After: ..., query
+
+    Examples
+    --------
+    >>> match query:
+    ...     case [x, y]:
+    ...         pass
+    LoadLocal(name="query")
+    MatchSequence(length=2, is_exact=True, target=no_match)
+    UnpackElements(before_count=2, after_count=0, has_extras=False, target=no_match)
+    StoreLocal(name="x")
+    StoreLocal(name="y")
+    JumpTo(target=end_match)
+    label no_match
+    Pop()
+    label end_match
+    """
+    length: int
+    is_exact: bool
+    target: Label
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata, previous_stack_metadata
+
+    def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
+        return instruction.bytecode_index + 1, self.target.index
+
+    def execute(self, frame: "Frame") -> None:
+        from collections.abc import Sequence
+        query = frame.stack[-1]
+        if not isinstance(query, Sequence) or (query_length := len(query)) < self.length:
+            frame.bytecode_index = self.target.index - 1
+        elif self.is_exact and query_length != self.length:
+            frame.bytecode_index = self.target.index - 1
+
+
+@dataclass(frozen=True)
+class MatchMapping(Opcode):
+    """Top of stack is the queried object.
+    Do not pop it off the check, and check if it is a mapping with the given keys.
+    If it not a mapping with the given keys, jump to target.
+
+    Notes
+    -----
+        | MatchMapping
+        | Stack Effect: 0
+        | Prior: ..., query
+        | After: ..., query
+
+    Examples
+    --------
+    >>> match query:
+    ...     case {'a': x, 'b': y}:
+    ...         pass
+    LoadLocal(name="query")
+    MatchMapping(keys=("a", "b"), target=no_match)
+    UnpackMapping(keys=("a", "b"), has_extras=False, target=no_match)
+    StoreLocal(name="x")
+    StoreLocal(name="y")
+    JumpTo(target=end_match)
+    label no_match
+    Pop()
+    label end_match
+    """
+    keys: tuple[object, ...]
+    target: Label
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata, previous_stack_metadata
+
+    def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
+        return instruction.bytecode_index + 1, self.target.index
+
+    def execute(self, frame: "Frame") -> None:
+        from collections.abc import Mapping
+        query = frame.stack[-1]
+        if isinstance(query, Mapping):
+            mapping_keys = query.keys()
+            for key in self.keys:
+                if key not in mapping_keys:
+                    frame.bytecode_index = self.target.index - 1
+                    return
+        else:
             frame.bytecode_index = self.target.index - 1
 
 
@@ -3518,6 +3661,59 @@ class UnpackElements(Opcode):
 
         for element in reversed(elements):
             frame.stack.append(element)
+
+
+@dataclass(frozen=True)
+class UnpackMapping(Opcode):
+    """Pops off the top of stack (which is a mapping), and push the values of the given keys
+    onto the stack in reversed order.
+    If `has_extras` is True, push all items in the mapping not specified by the given keys into
+    a new dict at the top of the stack
+
+    Notes
+    -----
+        | UnpackElements
+        | Stack Effect: len(keys) + (1 if has_extras else 0) - 1
+        | Prior: ..., mapping
+        | After: ..., value_(len(keys) - 1), ..., value_1, value_0, (extras_dict if has_extras)
+
+    Examples
+    --------
+    >>> match mapping:
+    ...     case {'a': x, 'b': y}
+    LoadLocal(name="mapping")
+    MatchMapping(keys=("a", "b"))
+    UnpackMapping(keys=("a", "b"), has_extras=False)
+    StoreLocal(name="x")
+    StoreLocal(name="y")
+    """
+    keys: tuple[object, ...]
+    has_extras: bool
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        values = [ValueSource(sources=(instruction,), value_type=object)] * len(self.keys)
+        if self.has_extras:
+            values.append(ValueSource(sources=(instruction,), value_type=dict))
+        return previous_stack_metadata.pop(1).push(*values),
+
+    def execute(self, frame: "Frame") -> None:
+        mapping = frame.stack.pop()
+        if self.has_extras:
+            extras = dict()
+            for name, value in mapping.items():
+                if not name in self.keys:
+                    extras[name] = value
+            for name in reversed(self.keys):
+                frame.stack.append(mapping[name])
+            frame.stack.append(extras)
+        else:
+            for name in reversed(self.keys):
+                frame.stack.append(mapping[name])
 
 
 @dataclass(frozen=True)
