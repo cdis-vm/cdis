@@ -1139,6 +1139,20 @@ def test_match_or():
         assert_bytecode_for_args(is_even, i)
 
 
+def test_match_guard():
+    def is_even(number):
+        match number:
+            case int(num) if num % 2 == 0:
+                return True
+            case int(num) if num % 2 == 1:
+                return False
+            case _:
+                raise ValueError('Value is not an integer!')
+
+    for i in range(11):
+        assert_bytecode_for_args(is_even, i)
+
+
 def test_match_class():
     class Job:
         name: str
