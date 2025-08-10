@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace, field
 from abc import ABC, abstractmethod
 from functools import cached_property
 from inspect import Signature, Parameter
-from typing import TYPE_CHECKING, Iterator, Any, Union, cast
+from typing import TYPE_CHECKING, Iterator, Any, Union, cast, ClassVar
 from enum import Enum
 import ast
 import operator
@@ -2147,33 +2147,47 @@ class IfFalse(Opcode):
 
 
 @dataclass(frozen=True)
-class MatchInstanceOf(Opcode):
+class MatchClass(Opcode):
     """Top of stack is the checked type, and the item below it is the quried object.
     Pop only the checked type off the stack. Jump to target if the object is not an instance of
-    the checked type.
+    the checked type, or does not have the specified attributes. If  positional_count,
+    read __match_args__ from the popped type, and raise TypeError if positional_count is
+    greater than len(__match_args__), or if __match_args__ is missing from the type.
+    If the queried object is an instance of the type and has the specified attributes,
+    push the values of the specified attributes to the stack.
 
     Notes
     -----
-        | MatchInstanceOf
-        | Stack Effect: -1
+        | MatchClass
+        | Stack Effect: len(attributes) + positional_count - 1 if matched else -1
         | Prior: ..., query, type
-        | After: ..., query
+        | After (matched): ..., query, positional_0, ..., positional_{positional_count - 1}, attribute_0, ..., attribute_(len(attributes) - 1)
+        | After (not matched): ..., query
 
     Examples
     --------
     >>> match query:
-    ...     case MyType():
+    ...     case MyType(positional_arg, my_attr=value):
     ...         pass
     LoadLocal(name="query")
-    MatchInstanceOf(target=no_match)
-    Pop()
+    MatchClass(target=no_match, positional_count=1, attributes=('my_attr',))
+    StoreSynthetic(index=0)  # my_attr
+    StoreSynthetic(index=1)  # positional_arg
+    LoadSynthetic(index=0)
+    StoreLocal(name='value')
+    LoadSynthetic(index=1)
+    StoreLocal(name='positional_arg')
     JumpTo(target=end_match)
     label no_match
     Pop()
     label end_match
     """
-
+    attributes: tuple[str, ...]
+    positional_count: int
     target: Label
+    # Types that get special handling; see https://peps.python.org/pep-0634/#class-patterns
+    literal_types: ClassVar[tuple[type, ...]] = (bool, bytearray, bytes, dict, float, frozenset, int, list, set, str,
+                                                 tuple)
 
     def next_stack_metadata(
         self,
@@ -2181,7 +2195,8 @@ class MatchInstanceOf(Opcode):
         bytecode: "Bytecode",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
-        return previous_stack_metadata.pop(1), previous_stack_metadata.pop(1)
+        pushed_items = tuple([ValueSource(sources=(instruction,), value_type=object)] * (len(self.attributes) + self.positional_count))
+        return previous_stack_metadata.pop(1).push(*pushed_items), previous_stack_metadata.pop(1)
 
     def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
         return instruction.bytecode_index + 1, self.target.index
@@ -2191,6 +2206,42 @@ class MatchInstanceOf(Opcode):
         query = frame.stack[-1]
         if not isinstance(query, checked_type):
             frame.bytecode_index = self.target.index - 1
+            return
+        sentinel = object()
+        out = []
+        matched_names = set()
+        if self.positional_count > 0:
+            matched_args = getattr(checked_type, '__match_args__', sentinel)
+            if matched_args is sentinel:
+                if issubclass(checked_type, MatchClass.literal_types):
+                    matched_args = (sentinel,)
+                else:
+                    raise TypeError(f'{checked_type}() accepts 0 positional sub-patterns ({self.positional_count} given)')
+            if self.positional_count > len(matched_args):
+                raise TypeError(f'{checked_type}() accepts {len(matched_args)} positional sub-patterns ({self.positional_count} given)')
+            for attribute in matched_args[:self.positional_count]:
+                # handle literal
+                if attribute is sentinel:
+                    out.append(query)
+                    continue
+                if attribute in matched_names:
+                    raise TypeError(f"{checked_type}() got multiple sub-patterns for attribute '{attribute}'")
+                value = getattr(query, attribute, sentinel)  # type: ignore
+                if value is sentinel:
+                    frame.bytecode_index = self.target.index - 1
+                    return
+                out.append(value)
+                matched_names.add(attribute)
+        for attribute in self.attributes:
+            if attribute in matched_names:
+                raise TypeError(f"{checked_type}() got multiple sub-patterns for attribute '{attribute}'")
+            value = getattr(query, attribute, sentinel)
+            if value is sentinel:
+                frame.bytecode_index = self.target.index - 1
+                return
+            out.append(value)
+            matched_names.add(attribute)
+        frame.stack.extend(out)
 
 
 @dataclass(frozen=True)

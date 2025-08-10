@@ -1528,8 +1528,44 @@ class Bytecode:
                 out = out.add_label(match_success_label)
                 return out
             case ast.MatchClass(cls=matched_class, patterns=subpatterns, kwd_patterns=kwd_subpatterns, kwd_attrs=kwd_attrs):
-                # TODO
-                raise NotImplementedError()
+                out = self.with_expression_opcodes(matched_class, renames)
+                out = out.add_op(opcode.MatchClass(target=next_case_label,
+                                                   attributes=tuple(kwd_attrs),
+                                                   positional_count=len(subpatterns),))
+                attribute_vars = {}
+                positional_vars = {}
+
+                # Store the values on the stack in reverse order
+                for kwd_attr in reversed(kwd_attrs):
+                    out = out.new_synthetic()
+                    attribute_vars[kwd_attr] = out.current_synthetic
+                    out = out.add_op(opcode.StoreSynthetic(index=out.current_synthetic))
+                for index, _ in enumerate(subpatterns):
+                    out = out.new_synthetic()
+                    positional_vars[len(subpatterns) - index - 1] = out.current_synthetic
+                    out = out.add_op(opcode.StoreSynthetic(index=out.current_synthetic))
+
+                match_success_label = Label()
+                match_failed_label = Label()
+
+                for index, subpattern in enumerate(subpatterns):
+                    out = out.add_op(opcode.LoadSynthetic(index=positional_vars[index]))
+                    out = out.with_match_pattern_opcodes(subpattern, True, match_failed_label, renames)
+
+                for index, subpattern in enumerate(kwd_subpatterns):
+                    out = out.add_op(opcode.LoadSynthetic(index=attribute_vars[kwd_attrs[index]]))
+                    out = out.with_match_pattern_opcodes(subpattern, True, match_failed_label, renames)
+
+                out = out.add_op(opcode.JumpTo(target=match_success_label))
+                out = out.add_label(match_failed_label)
+                out = out.add_ops(opcode.Pop(),
+                                  opcode.JumpTo(target=next_case_label))
+                out = out.add_label(match_success_label)
+                for _ in kwd_attrs:
+                    out = out.free_synthetic()
+                for _ in subpatterns:
+                    out = out.free_synthetic()
+                return out
             case ast.MatchStar(name=name):
                 out = self
                 if name is not None:

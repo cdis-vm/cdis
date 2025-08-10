@@ -1137,3 +1137,54 @@ def test_match_or():
 
     for i in range(11):
         assert_bytecode_for_args(is_even, i)
+
+
+def test_match_class():
+    class Job:
+        name: str
+        duration: int
+        __match_args__ = ('name', 'duration')
+
+        def __init__(self, name: str, duration: int):
+            self.name = name
+            self.duration = duration
+
+    def department(job):
+        match job:
+            case Job('Programmer'):
+                return 'IT'
+            case Job('Supervisor', 1):
+                return 'Onsite'
+            case Job(name='Supervisor'):
+                return 'Management'
+            case Job(duration=duration, name='CEO'):
+                return 'Executive'
+            case _:
+                raise ValueError('Could not find department for job')
+
+    assert_bytecode_for_args(department, Job('Programmer', 10))
+    assert_bytecode_for_args(department, Job('Supervisor', 1))
+    assert_bytecode_for_args(department, Job('Supervisor', 2))
+    assert_bytecode_for_args(department, Job('CEO', 2))
+    assert_bytecode_for_args(department, 10)
+
+
+def test_match_literal():
+    def function(query):
+        match query:
+            case int(10):
+                return 'int 10'
+            case int():
+                return 'int'
+            case str('name'):
+                return 'str name'
+            case str():
+                return 'str'
+            case _:
+                raise TypeError()
+
+    assert_bytecode_for_args(function, 10)
+    assert_bytecode_for_args(function, 1)
+    assert_bytecode_for_args(function, 'name')
+    assert_bytecode_for_args(function, 'str')
+    assert_bytecode_for_args(function, set())
