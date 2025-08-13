@@ -1578,6 +1578,7 @@ class Bytecode:
                 if subpattern is not None:
                     out = out.with_match_pattern_opcodes(subpattern, False, next_case_label, renames)
                 if name is not None:
+                    # TODO: Delay assignment until guard evaluation
                     out = out.with_assignment_opcodes(ast.Name(id=name, ctx=ast.Store()), renames)
                 else:
                     out = out.add_op(opcode.Pop())
