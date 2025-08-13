@@ -1,6 +1,11 @@
 from .conftest import (
-    assert_bytecode_for_args, assert_generator_bytecode_for_args, assert_async_bytecode_for_args,
-    Skip, Sent, Thrown)
+    assert_bytecode_for_args,
+    assert_generator_bytecode_for_args,
+    assert_async_bytecode_for_args,
+    Skip,
+    Sent,
+    Thrown,
+)
 
 
 def test_return_constant():
@@ -84,7 +89,9 @@ def test_multi_target_assignment():
     # Python error messages might change across versions
     assert_bytecode_for_args(multi_target_assignment, [1], check_exception_args=False)
     assert_bytecode_for_args(multi_target_assignment, [1, 2])
-    assert_bytecode_for_args(multi_target_assignment, [1, 2, 3], check_exception_args=False)
+    assert_bytecode_for_args(
+        multi_target_assignment, [1, 2, 3], check_exception_args=False
+    )
 
 
 def test_nested_multi_target_assignment():
@@ -93,10 +100,16 @@ def test_nested_multi_target_assignment():
         return a, b, c
 
     # Python error messages might change across versions
-    assert_bytecode_for_args(nested_multi_target_assignment, [1], check_exception_args=False)
-    assert_bytecode_for_args(nested_multi_target_assignment, [1, (2,)], check_exception_args=False)
+    assert_bytecode_for_args(
+        nested_multi_target_assignment, [1], check_exception_args=False
+    )
+    assert_bytecode_for_args(
+        nested_multi_target_assignment, [1, (2,)], check_exception_args=False
+    )
     assert_bytecode_for_args(nested_multi_target_assignment, [1, (2, 3)])
-    assert_bytecode_for_args(nested_multi_target_assignment, [1, (2, 3, 4)], check_exception_args=False)
+    assert_bytecode_for_args(
+        nested_multi_target_assignment, [1, (2, 3, 4)], check_exception_args=False
+    )
 
 
 def test_multi_target_extras_assignment():
@@ -105,7 +118,9 @@ def test_multi_target_extras_assignment():
         return a, b, c
 
     # Python error messages might change across versions
-    assert_bytecode_for_args(multi_target_extras_assignment, [1], check_exception_args=False)
+    assert_bytecode_for_args(
+        multi_target_extras_assignment, [1], check_exception_args=False
+    )
     assert_bytecode_for_args(multi_target_extras_assignment, [1, 2])
     assert_bytecode_for_args(multi_target_extras_assignment, [1, 2, 3])
     assert_bytecode_for_args(multi_target_extras_assignment, [1, 2, 3, 4])
@@ -388,7 +403,7 @@ def test_try():
             return 1
         except ValueError:
             return 2
-        except:
+        except:  # noqa
             return 3
 
     assert_bytecode_for_args(try_, IOError)
@@ -736,6 +751,7 @@ def test_inner_function():
     def outer_function(x):
         def inner_function(y):
             return x + y
+
         return inner_function(x * 2)
 
     assert_bytecode_for_args(outer_function, 1)
@@ -745,8 +761,9 @@ def test_inner_function():
 
 def test_inner_function_with_defaults():
     def outer_function(x):
-        def inner_function(y=x*2):
+        def inner_function(y=x * 2):
             return x + y
+
         x = 10
         return inner_function()
 
@@ -757,7 +774,7 @@ def test_inner_function_with_defaults():
 
 def test_lambda_function():
     def outer_function(x):
-        adder = lambda y: x + y
+        adder = lambda y: x + y  # noqa
         return adder(x * 2)
 
     assert_bytecode_for_args(outer_function, 1)
@@ -767,7 +784,7 @@ def test_lambda_function():
 
 def test_lambda_function_with_defaults():
     def outer_function(x):
-        adder = lambda y=x*2: x + y
+        adder = lambda y=x * 2: x + y  # noqa
         x = 10
         return adder()
 
@@ -905,7 +922,7 @@ def test_context_manager_assign_value():
 
 def test_generator():
     def generator(x):
-        total=0
+        total = 0
         for i in range(x):
             total = total + i
             yield total
@@ -922,11 +939,9 @@ def test_generator_send():
     # Assert that when this generator is used incorrectly, it matches Python
     assert_generator_bytecode_for_args(generator, 0)
 
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(),
-        Sent(20),
-        Skip()
-    ))
+    assert_generator_bytecode_for_args(
+        generator, 0, sequence=(Skip(), Sent(20), Skip())
+    )
 
 
 def test_generator_throw():
@@ -939,23 +954,17 @@ def test_generator_throw():
             raise
 
     # No exception
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(2),
-    ))
+    assert_generator_bytecode_for_args(generator, 0, sequence=(Skip(2),))
 
     # ValueError
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(),
-        Thrown(ValueError()),
-        Skip()
-    ))
+    assert_generator_bytecode_for_args(
+        generator, 0, sequence=(Skip(), Thrown(ValueError()), Skip())
+    )
 
     # NameError
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(),
-        Thrown(NameError()),
-        Skip()
-    ))
+    assert_generator_bytecode_for_args(
+        generator, 0, sequence=(Skip(), Thrown(NameError()), Skip())
+    )
 
 
 def test_subgenerator():
@@ -977,11 +986,9 @@ def test_subgenerator_send():
     # Assert that when this generator is used incorrectly, it matches Python
     assert_generator_bytecode_for_args(generator, 0)
 
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(),
-        Sent(20),
-        Skip()
-    ))
+    assert_generator_bytecode_for_args(
+        generator, 0, sequence=(Skip(), Sent(20), Skip())
+    )
 
 
 def test_subgenerator_throw():
@@ -997,23 +1004,17 @@ def test_subgenerator_throw():
         yield from coroutine(x)
 
     # No exception
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(2),
-    ))
+    assert_generator_bytecode_for_args(generator, 0, sequence=(Skip(2),))
 
     # ValueError
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(),
-        Thrown(ValueError()),
-        Skip()
-    ))
+    assert_generator_bytecode_for_args(
+        generator, 0, sequence=(Skip(), Thrown(ValueError()), Skip())
+    )
 
     # NameError
-    assert_generator_bytecode_for_args(generator, 0, sequence=(
-        Skip(),
-        Thrown(NameError()),
-        Skip()
-    ))
+    assert_generator_bytecode_for_args(
+        generator, 0, sequence=(Skip(), Thrown(NameError()), Skip())
+    )
 
 
 def test_async():
@@ -1022,7 +1023,7 @@ def test_async():
 
     @coroutine
     def generator(x):
-        total=0
+        total = 0
         for i in range(x):
             total = total + i
             yield from sleep(total)
@@ -1038,6 +1039,7 @@ def test_async():
 def test_import():
     def sqrt(x):
         import math
+
         return int(math.sqrt(x))
 
     assert_bytecode_for_args(sqrt, 4)
@@ -1047,6 +1049,7 @@ def test_import():
 def test_import_as():
     def sqrt(x):
         import math as m
+
         return int(m.sqrt(x))
 
     assert_bytecode_for_args(sqrt, 4)
@@ -1055,7 +1058,9 @@ def test_import_as():
 
 def test_multi_import():
     def sqrt(x):
-        import math, string
+        import math
+        import string
+
         return string.Formatter().format("{}", int(math.sqrt(x)))
 
     assert_bytecode_for_args(sqrt, 4)
@@ -1065,6 +1070,7 @@ def test_multi_import():
 def test_import_from():
     def sqrt(x):
         from math import sqrt as square_root
+
         return int(square_root(x))
 
     assert_bytecode_for_args(sqrt, 4)
@@ -1074,9 +1080,11 @@ def test_import_from():
 def test_import_path():
     def is_iterable(asserted):
         import collections.abc
+
         return isinstance(asserted, collections.abc.Iterable)
 
     from collections.abc import Collection, Iterable, KeysView
+
     assert_bytecode_for_args(is_iterable, Collection)
     assert_bytecode_for_args(is_iterable, Iterable)
     assert_bytecode_for_args(is_iterable, KeysView)
@@ -1107,21 +1115,21 @@ def test_match_sequence():
 def test_match_mapping():
     def where_is_0(items):
         match items:
-            case {'a': 0, 'b': 0}:
-                return 'ab'
-            case {'a': 0}:
-                return 'a'
-            case {'b': 0}:
-                return 'b'
+            case {"a": 0, "b": 0}:
+                return "ab"
+            case {"a": 0}:
+                return "a"
+            case {"b": 0}:
+                return "b"
             case {}:
-                return ''
+                return ""
             case _:
                 raise ValueError()
 
-    assert_bytecode_for_args(where_is_0, {'a': 0, 'b': 0})
-    assert_bytecode_for_args(where_is_0, {'a': 0, 'b': 1})
-    assert_bytecode_for_args(where_is_0, {'a': 1, 'b': 0})
-    assert_bytecode_for_args(where_is_0, {'a': 0})
+    assert_bytecode_for_args(where_is_0, {"a": 0, "b": 0})
+    assert_bytecode_for_args(where_is_0, {"a": 0, "b": 1})
+    assert_bytecode_for_args(where_is_0, {"a": 1, "b": 0})
+    assert_bytecode_for_args(where_is_0, {"a": 0})
     assert_bytecode_for_args(where_is_0, 10)
 
 
@@ -1133,7 +1141,7 @@ def test_match_or():
             case 1 | 3 | 5 | 7 | 9:
                 return False
             case _:
-                raise ValueError('Value is not a true number!')
+                raise ValueError("Value is not a true number!")
 
     for i in range(11):
         assert_bytecode_for_args(is_even, i)
@@ -1147,7 +1155,7 @@ def test_match_guard():
             case int(num) if num % 2 == 1:
                 return False
             case _:
-                raise ValueError('Value is not an integer!')
+                raise ValueError("Value is not an integer!")
 
     for i in range(11):
         assert_bytecode_for_args(is_even, i)
@@ -1157,7 +1165,7 @@ def test_match_class():
     class Job:
         name: str
         duration: int
-        __match_args__ = ('name', 'duration')
+        __match_args__ = ("name", "duration")
 
         def __init__(self, name: str, duration: int):
             self.name = name
@@ -1165,21 +1173,21 @@ def test_match_class():
 
     def department(job):
         match job:
-            case Job('Programmer'):
-                return 'IT'
-            case Job('Supervisor', 1):
-                return 'Onsite'
-            case Job(name='Supervisor'):
-                return 'Management'
-            case Job(duration=duration, name='CEO'):
-                return 'Executive'
+            case Job("Programmer"):
+                return "IT"
+            case Job("Supervisor", 1):
+                return "Onsite"
+            case Job(name="Supervisor"):
+                return "Management"
+            case Job(duration=duration, name="CEO"):
+                return f"Executive {duration}"
             case _:
-                raise ValueError('Could not find department for job')
+                raise ValueError("Could not find department for job")
 
-    assert_bytecode_for_args(department, Job('Programmer', 10))
-    assert_bytecode_for_args(department, Job('Supervisor', 1))
-    assert_bytecode_for_args(department, Job('Supervisor', 2))
-    assert_bytecode_for_args(department, Job('CEO', 2))
+    assert_bytecode_for_args(department, Job("Programmer", 10))
+    assert_bytecode_for_args(department, Job("Supervisor", 1))
+    assert_bytecode_for_args(department, Job("Supervisor", 2))
+    assert_bytecode_for_args(department, Job("CEO", 2))
     assert_bytecode_for_args(department, 10)
 
 
@@ -1187,18 +1195,18 @@ def test_match_literal():
     def function(query):
         match query:
             case int(10):
-                return 'int 10'
+                return "int 10"
             case int():
-                return 'int'
-            case str('name'):
-                return 'str name'
+                return "int"
+            case str("name"):
+                return "str name"
             case str():
-                return 'str'
+                return "str"
             case _:
                 raise TypeError()
 
     assert_bytecode_for_args(function, 10)
     assert_bytecode_for_args(function, 1)
-    assert_bytecode_for_args(function, 'name')
-    assert_bytecode_for_args(function, 'str')
+    assert_bytecode_for_args(function, "name")
+    assert_bytecode_for_args(function, "str")
     assert_bytecode_for_args(function, set())

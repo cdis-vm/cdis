@@ -24,25 +24,28 @@ class Frame:
     def locals(self) -> Mapping[str, object]:
         """Returns a view of merging variables and closure"""
         from collections import ChainMap, UserDict
+
         class ClosureDict(UserDict):
             def __getitem__(_, key):
                 return self.closure[key].cell_contents
+
             def __setitem__(_, key, value):
                 self.closure[key].cell_contents = value
+
             def __delitem__(_, key):
                 self.closure[key].cell_contents = None
+
             def __len__(_):
                 return len(self.closure)
 
-        return ChainMap(self.variables,
-                        ClosureDict())
+        return ChainMap(self.variables, ClosureDict())
 
     @staticmethod
     def new_frame(vm: "CDisVM") -> "Frame":
         return Frame(
             vm=vm,
             bytecode_index=0,
-            function_name='<unknown>',
+            function_name="<unknown>",
             stack=[],
             current_exception=None,
             variables={},
@@ -110,28 +113,30 @@ class CDisVM:
         instruction = bytecode.instructions[top_frame.bytecode_index]
         self.stack_trace = None
         if self._trace:
-            print(f'''
+            print(f"""
             function={top_frame.function_name}
             stack={top_frame.stack}
             variables={top_frame.variables}
             synthetics={top_frame.synthetic_variables}
             current_exception={top_frame.current_exception}
             {instruction}
-            ''')
+            """)
         try:
             instruction.opcode.execute(top_frame)
             top_frame.bytecode_index += 1
         except BaseException as e:
-            self.stack_trace = [(_frame.function_name, _frame.bytecode_index) for _frame in self.frames]
+            self.stack_trace = [
+                (_frame.function_name, _frame.bytecode_index) for _frame in self.frames
+            ]
             while len(self.frames) > 1:
                 top_frame = self.frames[-1]
                 top_frame.current_exception = e
                 top_frame.stack = [e]
                 for exception_handler in top_frame.exception_handlers:
                     if (
-                            exception_handler.from_label._bytecode_index
-                            <= top_frame.bytecode_index
-                            < exception_handler.to_label._bytecode_index
+                        exception_handler.from_label._bytecode_index
+                        <= top_frame.bytecode_index
+                        < exception_handler.to_label._bytecode_index
                     ):
                         if isinstance(e, exception_handler.exception_class):
                             top_frame.bytecode_index = (
@@ -146,4 +151,6 @@ class CDisVM:
                 raise e
 
     def __repr__(self):
-        return '>'.join(f'{_frame.function_name}:{_frame.bytecode_index}' for _frame in self.frames)
+        return ">".join(
+            f"{_frame.function_name}:{_frame.bytecode_index}" for _frame in self.frames
+        )

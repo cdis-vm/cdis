@@ -5,8 +5,12 @@ from dataclasses import dataclass
 
 
 def assert_bytecode_for_args(
-    function: Callable, *args, trace=False, timeout=3,
-        check_exception_args=True, **kwargs
+    function: Callable,
+    *args,
+    trace=False,
+    timeout=3,
+    check_exception_args=True,
+    **kwargs,
 ):
     import inspect
 
@@ -22,7 +26,9 @@ def assert_bytecode_for_args(
         actual = vm.run(bytecode, trace=trace, timeout=timeout, *args, **kwargs)
     except Exception as e:
         if expected_error is not None:
-            if expected_error.__class__ != e.__class__ or (check_exception_args and expected_error.args != e.args):
+            if expected_error.__class__ != e.__class__ or (
+                check_exception_args and expected_error.args != e.args
+            ):
                 raise AssertionError(
                     f"Expected error {expected_error!r} but a different exception was raised {e!r}\n"
                     f"Stack Trace: {vm.stack_trace}\n"
@@ -55,8 +61,12 @@ def assert_bytecode_for_args(
 
 
 def assert_async_bytecode_for_args(
-    function: Callable, *args, trace=False, timeout=3,
-        check_exception_args=True, **kwargs
+    function: Callable,
+    *args,
+    trace=False,
+    timeout=3,
+    check_exception_args=True,
+    **kwargs,
 ):
     import inspect
     from asyncio import run
@@ -72,13 +82,16 @@ def assert_async_bytecode_for_args(
         expected = None
         expected_error = e
     try:
+
         async def actual_wrapper():
             return await async_class(*args, **kwargs)
 
         actual = run(actual_wrapper())
     except Exception as e:
         if expected_error is not None:
-            if expected_error.__class__ != e.__class__ or (check_exception_args and expected_error.args != e.args):
+            if expected_error.__class__ != e.__class__ or (
+                check_exception_args and expected_error.args != e.args
+            ):
                 raise AssertionError(
                     f"Expected error {expected_error!r} but a different exception was raised {e!r}\n"
                     f"Stack Trace: {vm.stack_trace}\n"
@@ -126,8 +139,12 @@ class Skip:
 
 
 def assert_generator_bytecode_for_args(
-    generator: Callable, *args, trace=False, timeout=3, sequence: Sequence[Sent | Thrown | Skip] | None = None,
-        **kwargs
+    generator: Callable,
+    *args,
+    trace=False,
+    timeout=3,
+    sequence: Sequence[Sent | Thrown | Skip] | None = None,
+    **kwargs,
 ):
     import inspect
 
@@ -175,7 +192,10 @@ def assert_generator_bytecode_for_args(
                     f"Source:\n{inspect.getsource(generator)}\n"
                     f"Bytecode:\n{generator_bytecode.methods['_next_0']}"
                 )
-            elif actual_error.__class__ != expected_error.__class__ or actual_error.args != expected_error.args:
+            elif (
+                actual_error.__class__ != expected_error.__class__
+                or actual_error.args != expected_error.args
+            ):
                 raise AssertionError(
                     f"Expected error {expected_error!r} but got error {actual_error!r}\n"
                     f"Stack Trace: {vm.stack_trace}\n"
