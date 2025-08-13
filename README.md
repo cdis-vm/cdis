@@ -1,3 +1,5 @@
+![cdis logo](https://raw.githubusercontent.com/cdis-vm/cdis/main/cdis-logo.png)
+
 # cdis - a *consistent* Python disassembler
 
 ## What is it?
