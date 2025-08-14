@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cdis"
-version = "1.0.0"
+version = "0.0.0a0"
 requires-python = ">=3.10"
 readme = "README.md"
 license = "Apache-2.0"
