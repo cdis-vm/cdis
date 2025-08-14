@@ -1036,6 +1036,35 @@ def test_async():
     assert_async_bytecode_for_args(task, 1)
 
 
+def test_async_for():
+    from asyncio import sleep
+
+    class ARange:
+        def __init__(self, start, stop):
+            self.current = start
+            self.stop = stop
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.current >= self.stop:
+                raise StopAsyncIteration()
+            else:
+                await sleep(0)
+                self.current += 1
+                return self.current
+
+    async def task(start, end):
+        total = 0
+        async for value in ARange(start, end):
+            total += value
+        return total
+
+    assert_async_bytecode_for_args(task, 0, 10, trace=True)
+    assert_async_bytecode_for_args(task, 20, 30)
+
+
 def test_import():
     def sqrt(x):
         import math

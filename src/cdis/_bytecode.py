@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace, field
 from abc import ABC, abstractmethod
 from functools import cached_property
 from inspect import Signature, Parameter
-from typing import TYPE_CHECKING, Iterator, Any, Union, ClassVar
+from typing import TYPE_CHECKING, Iterator, Any, Union, ClassVar, AsyncIterator
 from enum import Enum
 import ast
 import operator
@@ -3680,6 +3680,112 @@ class GetAwaitableIterator(Opcode):
                 raise TypeError(f"object {item} can't be used in 'await' expression")
         else:
             frame.stack.append(await_function(item))
+
+
+@dataclass(frozen=True)
+class GetAsyncIterator(Opcode):
+    """Pops off the top of stack and gets its async for iterator.
+
+    Notes
+    -----
+        | GetAsyncIterator
+        | Stack Effect: -1
+        | Prior: ..., async_iterable
+        | After: ..., asyc_iterator
+
+    Examples
+    --------
+    >>> async for item in items:
+    ...     pass
+    LoadLocal(name="items")
+    GetAsyncIterator()
+    LoadSynthetic(index=0)
+    SetGeneratorDelegate()
+
+    label loop_start
+    LoadSynthetic(index=0)
+    SaveGeneratorState(StackMetadata(stack=1, variables=('item', 'items'), closure=(), synthetic_variables=1))
+    LoadSynthetic(index=0)
+
+    try:
+        DelegateOrRestoreGeneratorState(StackMetadata(stack=1, variables=(), closure=(), synthetic_variables=1))
+        StoreLocal(name="item")
+    except AsyncStopIteration:
+        JumpTo(target=loop_end)
+
+    Nop()
+    JumpTo(target=loop_start)
+    label loop_end
+    """
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return (
+            previous_stack_metadata.pop(1).push(
+                ValueSource(sources=(instruction,), value_type=AsyncIterator)
+            ),
+        )
+
+    def execute(self, frame: "Frame") -> None:
+        item = frame.stack.pop()
+        frame.stack.append(aiter(item))
+
+
+@dataclass(frozen=True)
+class GetAsyncNext(Opcode):
+    """Pops off the top of stack and gets its async next.
+
+    Notes
+    -----
+        | GetAsyncIterator
+        | Stack Effect: -1
+        | Prior: ..., asyc_iterator
+        | After: ..., async_next
+
+    Examples
+    --------
+    >>> async for item in items:
+    ...     pass
+    LoadLocal(name="items")
+    GetAsyncIterator()
+    LoadSynthetic(index=0)
+    SetGeneratorDelegate()
+
+    label loop_start
+    LoadSynthetic(index=0)
+    SaveGeneratorState(StackMetadata(stack=1, variables=('item', 'items'), closure=(), synthetic_variables=1))
+    LoadSynthetic(index=0)
+
+    try:
+        DelegateOrRestoreGeneratorState(StackMetadata(stack=1, variables=(), closure=(), synthetic_variables=1))
+        StoreLocal(name="item")
+    except AsyncStopIteration:
+        JumpTo(target=loop_end)
+
+    Nop()
+    JumpTo(target=loop_start)
+    label loop_end
+    """
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return (
+            previous_stack_metadata.pop(1).push(
+                ValueSource(sources=(instruction,), value_type=AsyncIterator)
+            ),
+        )
+
+    def execute(self, frame: "Frame") -> None:
+        async_iterator = frame.stack.pop()
+        frame.stack.append(anext(async_iterator))
 
 
 @dataclass(frozen=True)

@@ -1427,6 +1427,118 @@ class Bytecode:
                 out = out.add_label(break_label)
                 return out
 
+            case ast.AsyncFor(target=target, iter=iter, body=body, orelse=orelse):
+                out = self.new_synthetic()
+                iterator_synthetic = out.current_synthetic
+                next_label = Label()
+                got_next_label = Label()
+                iterator_exhausted_label = Label()
+                break_label = Label()
+                out = out.with_expression_opcodes(iter, renames)
+                out = out.add_op(opcode.GetAsyncIterator())
+                out = out.add_op(opcode.StoreSynthetic(iterator_synthetic))
+                out = out.add_label(next_label)
+                out = out.add_op(opcode.LoadSynthetic(iterator_synthetic))
+                out = out.add_op(opcode.GetAsyncNext())
+                out = out.add_op(opcode.GetAwaitableIterator())
+
+                yield_id = out.current_yield
+                out = out.add_op(opcode.LoadSynthetic(0))
+                out = out.add_op(opcode.SetGeneratorDelegate())
+
+                out = out.add_op(opcode.LoadConstant(None))
+                out = out.add_op(opcode.LoadSynthetic(0))
+                save_bytecode_index = len(out.instructions)
+                out = out.add_op(
+                    opcode.SaveGeneratorState(
+                        state_id=yield_id,
+                        stack_metadata=cast(StackMetadata, None),
+                    )
+                )
+
+                yield_label = Label()
+                out = out.add_yield_label(yield_label)
+                out = out.add_label(yield_label)
+
+                out = out.add_op(opcode.LoadSynthetic(0))
+
+                restore_bytecode_index = len(out.instructions)
+                out = out.add_op(
+                    opcode.DelegateOrRestoreGeneratorState(
+                        state_id=yield_id,
+                        stack_metadata=cast(StackMetadata, None),
+                    )
+                )
+
+                def deferred_processor(finalized_bytecode: "Bytecode"):
+                    stack_metadata = finalized_bytecode.stack_metadata[
+                        save_bytecode_index - 1
+                    ]
+                    old_save_instructions = finalized_bytecode.instructions[
+                        save_bytecode_index
+                    ]
+                    old_restore_instruction = finalized_bytecode.instructions[
+                        restore_bytecode_index
+                    ]
+
+                    new_instructions = (
+                        *finalized_bytecode.instructions[:save_bytecode_index],
+                        Instruction(
+                            bytecode_index=save_bytecode_index,
+                            lineno=old_save_instructions.lineno,
+                            opcode=opcode.SaveGeneratorState(
+                                state_id=yield_id, stack_metadata=stack_metadata
+                            ),
+                        ),
+                        *finalized_bytecode.instructions[
+                            save_bytecode_index + 1 : restore_bytecode_index
+                        ],
+                        Instruction(
+                            bytecode_index=restore_bytecode_index,
+                            lineno=old_restore_instruction.lineno,
+                            opcode=opcode.DelegateOrRestoreGeneratorState(
+                                state_id=yield_id, stack_metadata=stack_metadata
+                            ),
+                        ),
+                        *finalized_bytecode.instructions[restore_bytecode_index + 1 :],
+                    )
+                    return replace(finalized_bytecode, instructions=new_instructions)
+
+                out = out.add_deferred_processor(deferred_processor)
+                async_next_success_label = Label()
+                out = out.add_label(async_next_success_label)
+                out = out.with_assignment_opcodes(target, renames)
+                out = out.add_label(got_next_label)
+
+                out = out.push_continue_label(next_label)
+                out = out.push_break_label(break_label)
+
+                for body_statement in body:
+                    out = out.with_statement_opcodes(body_statement, renames)
+
+                out = out.pop_continue_label()
+                out = out.pop_break_label()
+
+                out = out.add_op(opcode.JumpTo(next_label))
+                out = out.add_label(iterator_exhausted_label)
+
+                for else_statement in orelse:
+                    out = out.with_statement_opcodes(else_statement, renames)
+
+                iteration_done_label = Label()
+                out = out.add_label(iteration_done_label)
+                out = out.add_exception_handler(
+                    ExceptionHandler(
+                        exception_class=StopAsyncIteration,
+                        from_label=yield_label,
+                        to_label=async_next_success_label,
+                        handler_label=iteration_done_label,
+                    )
+                )
+                out = out.add_op(opcode.Pop())
+                out = out.add_label(break_label)
+                return out
+
             case ast.FunctionDef() as func_def:
                 inner_function = self._create_inner_function(func_def)
                 out = self
