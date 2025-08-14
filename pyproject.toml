@@ -7,6 +7,27 @@ build-backend = "hatchling.build"
 name = "cdis"
 version = "1.0.0"
 requires-python = ">=3.10"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICEN[CS]E*"]
+keywords = ["dis", "cdis", "disassembly", "code generation", "code analysis"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Disassemblers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/cdis-vm/cdis/tree/main"
+Repository = "https://github.com/cdis-vm/cdis.git"
+Issues = "https://github.com/cdis-vm/cdis/issues"
 
 
 [dependency-groups]
