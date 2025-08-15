@@ -749,71 +749,7 @@ class Bytecode:
 
             case ast.Await(value=value):
                 out = self.with_expression_opcodes(value, renames)
-                out = out.add_op(opcode.GetAwaitableIterator())
-                yield_id = out.current_yield
-                out = out.add_op(opcode.LoadSynthetic(0))
-                out = out.add_op(opcode.SetGeneratorDelegate())
-
-                out = out.add_op(opcode.LoadConstant(None))
-                out = out.add_op(opcode.LoadSynthetic(0))
-                save_bytecode_index = len(out.instructions)
-                out = out.add_op(
-                    opcode.SaveGeneratorState(
-                        state_id=yield_id,
-                        stack_metadata=cast(StackMetadata, None),
-                    )
-                )
-
-                yield_label = Label()
-                out = out.add_yield_label(yield_label)
-                out = out.add_label(yield_label)
-
-                out = out.add_op(opcode.LoadSynthetic(0))
-
-                restore_bytecode_index = len(out.instructions)
-                out = out.add_op(
-                    opcode.DelegateOrRestoreGeneratorState(
-                        state_id=yield_id,
-                        stack_metadata=cast(StackMetadata, None),
-                    )
-                )
-
-                def deferred_processor(finalized_bytecode: "Bytecode"):
-                    stack_metadata = finalized_bytecode.stack_metadata[
-                        save_bytecode_index - 1
-                    ]
-                    old_save_instructions = finalized_bytecode.instructions[
-                        save_bytecode_index
-                    ]
-                    old_restore_instruction = finalized_bytecode.instructions[
-                        restore_bytecode_index
-                    ]
-
-                    new_instructions = (
-                        *finalized_bytecode.instructions[:save_bytecode_index],
-                        Instruction(
-                            bytecode_index=save_bytecode_index,
-                            lineno=old_save_instructions.lineno,
-                            opcode=opcode.SaveGeneratorState(
-                                state_id=yield_id, stack_metadata=stack_metadata
-                            ),
-                        ),
-                        *finalized_bytecode.instructions[
-                            save_bytecode_index + 1 : restore_bytecode_index
-                        ],
-                        Instruction(
-                            bytecode_index=restore_bytecode_index,
-                            lineno=old_restore_instruction.lineno,
-                            opcode=opcode.DelegateOrRestoreGeneratorState(
-                                state_id=yield_id, stack_metadata=stack_metadata
-                            ),
-                        ),
-                        *finalized_bytecode.instructions[restore_bytecode_index + 1 :],
-                    )
-                    return replace(finalized_bytecode, instructions=new_instructions)
-
-                out = out.add_deferred_processor(deferred_processor)
-                return out
+                return out._await_tos()
 
             case _:
                 raise NotImplementedError(
@@ -823,6 +759,226 @@ class Bytecode:
         raise RuntimeError(
             f"Missing return in case {type(expression)} in with_expression_opcodes"
         )
+
+    def _await_tos(self):
+        out = self.add_op(opcode.GetAwaitableIterator())
+        yield_id = out.current_yield
+        out = out.add_op(opcode.LoadSynthetic(0))
+        out = out.add_op(opcode.SetGeneratorDelegate())
+
+        out = out.add_op(opcode.LoadConstant(None))
+        out = out.add_op(opcode.LoadSynthetic(0))
+        save_bytecode_index = len(out.instructions)
+        out = out.add_op(
+            opcode.SaveGeneratorState(
+                state_id=yield_id,
+                stack_metadata=cast(StackMetadata, None),
+            )
+        )
+
+        yield_label = Label()
+        out = out.add_yield_label(yield_label)
+        out = out.add_label(yield_label)
+
+        out = out.add_op(opcode.LoadSynthetic(0))
+
+        restore_bytecode_index = len(out.instructions)
+        out = out.add_op(
+            opcode.DelegateOrRestoreGeneratorState(
+                state_id=yield_id,
+                stack_metadata=cast(StackMetadata, None),
+            )
+        )
+
+        def deferred_processor(finalized_bytecode: "Bytecode"):
+            stack_metadata = finalized_bytecode.stack_metadata[save_bytecode_index - 1]
+            old_save_instructions = finalized_bytecode.instructions[save_bytecode_index]
+            old_restore_instruction = finalized_bytecode.instructions[
+                restore_bytecode_index
+            ]
+
+            new_instructions = (
+                *finalized_bytecode.instructions[:save_bytecode_index],
+                Instruction(
+                    bytecode_index=save_bytecode_index,
+                    lineno=old_save_instructions.lineno,
+                    opcode=opcode.SaveGeneratorState(
+                        state_id=yield_id, stack_metadata=stack_metadata
+                    ),
+                ),
+                *finalized_bytecode.instructions[
+                    save_bytecode_index + 1 : restore_bytecode_index
+                ],
+                Instruction(
+                    bytecode_index=restore_bytecode_index,
+                    lineno=old_restore_instruction.lineno,
+                    opcode=opcode.DelegateOrRestoreGeneratorState(
+                        state_id=yield_id, stack_metadata=stack_metadata
+                    ),
+                ),
+                *finalized_bytecode.instructions[restore_bytecode_index + 1 :],
+            )
+            return replace(finalized_bytecode, instructions=new_instructions)
+
+        out = out.add_deferred_processor(deferred_processor)
+        return out
+
+    def _with(
+        self, with_items, body, *, is_async: bool, renames: dict[str, RenamedVariable]
+    ):
+        exit_callables = []
+        exit_managers = []
+        out = self
+
+        enter_method = "__aenter__" if is_async else "__enter__"
+        exit_method = "__aexit__" if is_async else "__exit__"
+
+        def call_exit(exception_index, exit_manager, exit_index):
+            return (
+                opcode.LoadSynthetic(index=exit_index),
+                opcode.CreateCallBuilder(),
+                opcode.LoadSynthetic(index=exit_manager),
+                opcode.WithPositionalArg(index=0),
+                opcode.LoadSynthetic(index=exception_index),
+                opcode.GetType(),
+                opcode.WithPositionalArg(index=1),
+                opcode.LoadSynthetic(index=exception_index),
+                opcode.WithPositionalArg(index=2),
+                opcode.LoadSynthetic(index=exception_index),
+                opcode.LoadAttr(name="__traceback__"),
+                opcode.WithPositionalArg(index=3),
+                opcode.CallWithBuilder(),
+            )
+
+        def call_normal_exit(exit_manager, exit_index):
+            return (
+                opcode.LoadSynthetic(index=exit_index),
+                opcode.CreateCallBuilder(),
+                opcode.LoadSynthetic(index=exit_manager),
+                opcode.WithPositionalArg(index=0),
+                opcode.LoadConstant(None),
+                opcode.WithPositionalArg(index=1),
+                opcode.LoadConstant(None),
+                opcode.WithPositionalArg(index=2),
+                opcode.LoadConstant(None),
+                opcode.WithPositionalArg(index=3),
+                opcode.CallWithBuilder(),
+                *([] if is_async else [opcode.Pop()]),
+            )
+
+        for with_item in with_items:
+            item_start_label = Label()
+            item_done_label = Label()
+            next_label = Label()
+            handler_start = Label()
+
+            out = out.add_label(item_start_label)
+            out = out.with_expression_opcodes(with_item.context_expr, renames)
+
+            out = out.new_synthetic()
+            exit_managers.append(out.current_synthetic)
+            out = out.new_synthetic()
+            exit_callables.append(out.current_synthetic)
+
+            out = out.add_ops(
+                opcode.Dup(),
+                opcode.Dup(),
+                opcode.StoreSynthetic(index=exit_managers[-1]),
+                opcode.LoadTypeAttr(name=enter_method),
+                opcode.Swap(),
+                opcode.LoadTypeAttr(name=exit_method),
+                opcode.StoreSynthetic(index=exit_callables[-1]),
+                opcode.CreateCallBuilder(),
+                opcode.LoadSynthetic(index=exit_managers[-1]),
+                opcode.WithPositionalArg(index=0),
+                opcode.CallWithBuilder(),
+            )
+            if is_async:
+                out = out._await_tos()
+
+            if with_item.optional_vars is not None:
+                out = out.with_assignment_opcodes(with_item.optional_vars, renames)
+            else:
+                out = out.add_op(opcode.Pop())
+
+            out.add_label(item_done_label)
+            # If an exception is raised when calling __enter__,
+            # do not shallow the exception, even if __exit__ return True
+            if len(exit_callables) != 1:
+                # Call exits of all context managers initialized up to this point
+                out = out.add_op(opcode.JumpTo(next_label))
+                out = out.add_exception_handler(
+                    ExceptionHandler(
+                        exception_class=BaseException,
+                        from_label=item_start_label,
+                        to_label=item_done_label,
+                        handler_label=handler_start,
+                    )
+                )
+                out = out.add_label(handler_start)
+                out = out.new_synthetic()
+                exception = out.current_synthetic
+                out = out.add_op(opcode.StoreSynthetic(index=exception))
+                for _index in range(len(exit_managers) - 1):
+                    exit_manager = exit_managers[_index]
+                    exit_callable = exit_callables[_index]
+                    out = out.add_ops(
+                        *call_exit(exception, exit_manager, exit_callable)
+                    )
+                    if is_async:
+                        out = out._await_tos()
+                    out.add_op(opcode.Pop())
+                out = out.free_synthetic()
+                out = out.add_op(opcode.ReraiseLast())
+                out = out.add_label(next_label)
+        with_start = Label()
+        with_end = Label()
+        handler_start = Label()
+        handler_end = Label()
+        out = out.add_label(with_start)
+        for inner_stmt in body:
+            out = out.with_statement_opcodes(inner_stmt, renames)
+        out = out.add_op(opcode.JumpTo(handler_end))
+        out = out.add_label(with_end)
+        out = out.add_label(handler_start)
+        out = out.add_exception_handler(
+            ExceptionHandler(
+                exception_class=BaseException,
+                from_label=with_start,
+                to_label=with_end,
+                handler_label=handler_start,
+            )
+        )
+        out = out.new_synthetic()
+        exception = out.current_synthetic
+        out = out.add_op(opcode.StoreSynthetic(index=exception))
+        out = out.add_op(opcode.LoadConstant(constant=False))
+        for _index in range(len(exit_managers)):
+            exit_manager = exit_managers[_index]
+            exit_callable = exit_callables[_index]
+            out = out.add_ops(*call_exit(exception, exit_manager, exit_callable))
+            if is_async:
+                out = out._await_tos()
+            # if there are multiple context managers,
+            # the exception is shallow if ANY of their exits
+            # return a truthy value
+            out = out.add_op(opcode.AsBool())
+            out = out.add_op(opcode.BinaryOp(operator=opcode.BinaryOperator.BitOr))
+        out = out.add_op(opcode.IfTrue(target=handler_end))
+        out = out.add_op(opcode.ReraiseLast())
+        out = out.free_synthetic()
+        out = out.add_label(handler_end)
+        for _index in range(len(exit_managers)):
+            exit_manager = exit_managers[_index]
+            exit_callable = exit_callables[_index]
+            out = out.add_ops(*call_normal_exit(exit_manager, exit_callable))
+            if is_async:
+                out = out._await_tos()
+                out = out.add_op(opcode.Pop())
+        for _ in exit_callables:
+            out = out.free_synthetic()
+            out = out.free_synthetic()
+        return out
 
     def get_comprehension_code(
         self,
@@ -1172,131 +1328,11 @@ class Bytecode:
 
                 return out
 
+            case ast.AsyncWith(items=with_items, body=body):
+                return self._with(with_items, body, is_async=True, renames=renames)
+
             case ast.With(items=with_items, body=body):
-                exit_callables = []
-                out = self
-
-                def call_exit(exception_index, exit_index):
-                    return (
-                        opcode.LoadSynthetic(index=exit_index),
-                        opcode.CreateCallBuilder(),
-                        opcode.LoadSynthetic(index=exception_index),
-                        opcode.GetType(),
-                        opcode.WithPositionalArg(index=0),
-                        opcode.LoadSynthetic(index=exception_index),
-                        opcode.WithPositionalArg(index=1),
-                        opcode.LoadSynthetic(index=exception_index),
-                        opcode.LoadAttr(name="__traceback__"),
-                        opcode.WithPositionalArg(index=2),
-                        opcode.CallWithBuilder(),
-                    )
-
-                def call_normal_exit(exit_index):
-                    return (
-                        opcode.LoadSynthetic(index=exit_index),
-                        opcode.CreateCallBuilder(),
-                        opcode.LoadConstant(None),
-                        opcode.WithPositionalArg(index=0),
-                        opcode.LoadConstant(None),
-                        opcode.WithPositionalArg(index=1),
-                        opcode.LoadConstant(None),
-                        opcode.WithPositionalArg(index=2),
-                        opcode.CallWithBuilder(),
-                        opcode.Pop(),
-                    )
-
-                for with_item in with_items:
-                    item_start_label = Label()
-                    item_done_label = Label()
-                    next_label = Label()
-                    handler_start = Label()
-
-                    out = out.add_label(item_start_label)
-                    out = out.with_expression_opcodes(with_item.context_expr, renames)
-                    out = out.new_synthetic()
-                    out = out.add_ops(
-                        opcode.Dup(),
-                        opcode.LoadAttr(name="__enter__"),
-                        opcode.Swap(),
-                        opcode.LoadAttr(name="__exit__"),
-                        opcode.StoreSynthetic(out.current_synthetic),
-                        opcode.CreateCallBuilder(),
-                        opcode.CallWithBuilder(),
-                    )
-
-                    if with_item.optional_vars is not None:
-                        out = out.with_assignment_opcodes(
-                            with_item.optional_vars, renames
-                        )
-                    else:
-                        out = out.add_op(opcode.Pop())
-
-                    out.add_label(item_done_label)
-                    # If an exception is raised when calling __enter__,
-                    # do not shallow the exception, even if __exit__ return True
-                    if len(exit_callables) != 0:
-                        # Call exits of all context managers initialized up to this point
-                        out = out.add_op(opcode.JumpTo(next_label))
-                        out = out.add_exception_handler(
-                            ExceptionHandler(
-                                exception_class=BaseException,
-                                from_label=item_start_label,
-                                to_label=item_done_label,
-                                handler_label=handler_start,
-                            )
-                        )
-                        out = out.add_label(handler_start)
-                        out = out.new_synthetic()
-                        exception = out.current_synthetic
-                        out = out.add_op(opcode.StoreSynthetic(index=exception))
-                        for exit_callable in exit_callables:
-                            out = out.add_ops(*call_exit(exception, exit_callable))
-                            out.add_op(opcode.Pop())
-                        out = out.free_synthetic()
-                        out = out.add_op(opcode.ReraiseLast())
-                        out = out.add_label(next_label)
-
-                    exit_callables.append(out.current_synthetic)
-                with_start = Label()
-                with_end = Label()
-                handler_start = Label()
-                handler_end = Label()
-                out = out.add_label(with_start)
-                for inner_stmt in body:
-                    out = out.with_statement_opcodes(inner_stmt, renames)
-                out = out.add_op(opcode.JumpTo(handler_end))
-                out = out.add_label(with_end)
-                out = out.add_label(handler_start)
-                out = out.add_exception_handler(
-                    ExceptionHandler(
-                        exception_class=BaseException,
-                        from_label=with_start,
-                        to_label=with_end,
-                        handler_label=handler_start,
-                    )
-                )
-                out = out.new_synthetic()
-                exception = out.current_synthetic
-                out = out.add_op(opcode.StoreSynthetic(index=exception))
-                out = out.add_op(opcode.LoadConstant(constant=False))
-                for exit_callable in exit_callables:
-                    out = out.add_ops(*call_exit(exception, exit_callable))
-                    # if there are multiple context managers,
-                    # the exception is shallow if ANY of their exits
-                    # return a truthy value
-                    out = out.add_op(opcode.AsBool())
-                    out = out.add_op(
-                        opcode.BinaryOp(operator=opcode.BinaryOperator.BitOr)
-                    )
-                out = out.add_op(opcode.IfTrue(target=handler_end))
-                out = out.add_op(opcode.ReraiseLast())
-                out = out.free_synthetic()
-                out = out.add_label(handler_end)
-                for exit_callable in exit_callables:
-                    out = out.add_ops(*call_normal_exit(exit_callable))
-                for _ in exit_callables:
-                    out = out.free_synthetic()
-                return out
+                return self._with(with_items, body, is_async=False, renames=renames)
 
             case ast.Assign(targets, value):
                 out = self.with_expression_opcodes(value, renames)
@@ -1440,73 +1476,13 @@ class Bytecode:
                 out = out.add_label(next_label)
                 out = out.add_op(opcode.LoadSynthetic(iterator_synthetic))
                 out = out.add_op(opcode.GetAsyncNext())
-                out = out.add_op(opcode.GetAwaitableIterator())
 
-                yield_id = out.current_yield
-                out = out.add_op(opcode.LoadSynthetic(0))
-                out = out.add_op(opcode.SetGeneratorDelegate())
+                await_start_label = Label()
+                out = out.add_label(await_start_label)
+                out = out._await_tos()
+                await_end_label = Label()
 
-                out = out.add_op(opcode.LoadConstant(None))
-                out = out.add_op(opcode.LoadSynthetic(0))
-                save_bytecode_index = len(out.instructions)
-                out = out.add_op(
-                    opcode.SaveGeneratorState(
-                        state_id=yield_id,
-                        stack_metadata=cast(StackMetadata, None),
-                    )
-                )
-
-                yield_label = Label()
-                out = out.add_yield_label(yield_label)
-                out = out.add_label(yield_label)
-
-                out = out.add_op(opcode.LoadSynthetic(0))
-
-                restore_bytecode_index = len(out.instructions)
-                out = out.add_op(
-                    opcode.DelegateOrRestoreGeneratorState(
-                        state_id=yield_id,
-                        stack_metadata=cast(StackMetadata, None),
-                    )
-                )
-
-                def deferred_processor(finalized_bytecode: "Bytecode"):
-                    stack_metadata = finalized_bytecode.stack_metadata[
-                        save_bytecode_index - 1
-                    ]
-                    old_save_instructions = finalized_bytecode.instructions[
-                        save_bytecode_index
-                    ]
-                    old_restore_instruction = finalized_bytecode.instructions[
-                        restore_bytecode_index
-                    ]
-
-                    new_instructions = (
-                        *finalized_bytecode.instructions[:save_bytecode_index],
-                        Instruction(
-                            bytecode_index=save_bytecode_index,
-                            lineno=old_save_instructions.lineno,
-                            opcode=opcode.SaveGeneratorState(
-                                state_id=yield_id, stack_metadata=stack_metadata
-                            ),
-                        ),
-                        *finalized_bytecode.instructions[
-                            save_bytecode_index + 1 : restore_bytecode_index
-                        ],
-                        Instruction(
-                            bytecode_index=restore_bytecode_index,
-                            lineno=old_restore_instruction.lineno,
-                            opcode=opcode.DelegateOrRestoreGeneratorState(
-                                state_id=yield_id, stack_metadata=stack_metadata
-                            ),
-                        ),
-                        *finalized_bytecode.instructions[restore_bytecode_index + 1 :],
-                    )
-                    return replace(finalized_bytecode, instructions=new_instructions)
-
-                out = out.add_deferred_processor(deferred_processor)
-                async_next_success_label = Label()
-                out = out.add_label(async_next_success_label)
+                out = out.add_label(await_end_label)
                 out = out.with_assignment_opcodes(target, renames)
                 out = out.add_label(got_next_label)
 
@@ -1530,8 +1506,8 @@ class Bytecode:
                 out = out.add_exception_handler(
                     ExceptionHandler(
                         exception_class=StopAsyncIteration,
-                        from_label=yield_label,
-                        to_label=async_next_success_label,
+                        from_label=await_start_label,
+                        to_label=await_end_label,
                         handler_label=iteration_done_label,
                     )
                 )
@@ -2084,7 +2060,6 @@ def unindent(code: str) -> str:
 def to_bytecode(function: FunctionType) -> Bytecode | opcode.ClassInfo:
     source = inspect.getsource(function)
     source = unindent(source)
-    print("\n" + source)
     function_ast: ast.FunctionDef = cast(ast.FunctionDef, ast.parse(source).body[0])
 
     return ast_to_bytecode(

@@ -1061,8 +1061,33 @@ def test_async_for():
             total += value
         return total
 
-    assert_async_bytecode_for_args(task, 0, 10, trace=True)
+    assert_async_bytecode_for_args(task, 0, 10)
     assert_async_bytecode_for_args(task, 20, 30)
+
+
+def test_async_with():
+    from asyncio import sleep
+
+    class AManager:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            await sleep(0)
+            return self.value
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            await sleep(0)
+            return False
+
+    async def task(value):
+        x = 10
+        async with AManager(value):
+            x += value
+        return x
+
+    assert_async_bytecode_for_args(task, 0)
+    assert_async_bytecode_for_args(task, 20)
 
 
 def test_import():

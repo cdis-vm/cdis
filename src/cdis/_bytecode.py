@@ -356,6 +356,13 @@ def _find_closest_common_ancestor(*cls_list: type) -> type:
 
 
 def _unify_types(a: type, b: type) -> type:
+    from typing import get_origin
+
+    while get_origin(a) is not None:
+        a = get_origin(a)
+    while get_origin(b) is not None:
+        b = get_origin(b)
+
     if issubclass(a, b):
         return b
     elif issubclass(b, a):
@@ -1394,6 +1401,58 @@ class LoadAttr(Opcode):
             if not hasattr(obj_type, "__getattr__"):
                 raise
             frame.stack.append(obj_type.__getattr__(obj, self.name))
+
+
+@dataclass(frozen=True)
+class LoadTypeAttr(Opcode):
+    """Replaces top of stack with the result of an attribute lookup from its type.
+
+    Notes
+    -----
+        | LoadTypeAttr
+        | Stack Effect: 0
+        | Prior: ..., object
+        | After: ..., type_attribute
+
+    Attributes
+    ----------
+    name: str
+        The name of the attribute.
+
+    Examples
+    --------
+    >>> with ctx:
+    LoadLocal(name="ctx")
+    LoadTypeAttr(name="__enter__")
+    """
+
+    name: str
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return (
+            previous_stack_metadata.pop(1).push(
+                ValueSource(
+                    sources=(instruction,),
+                    value_type=object,  # TODO
+                )
+            ),
+        )
+
+    def execute(self, frame: "Frame") -> None:
+        obj = frame.stack.pop()
+        obj_type = type(obj)
+        obj_type_type = type(obj_type)
+        try:
+            frame.stack.append(obj_type_type.__getattribute__(obj_type, self.name))
+        except AttributeError:
+            if not hasattr(obj_type_type, "__getattr__"):
+                raise
+            frame.stack.append(obj_type_type.__getattr__(obj_type, self.name))
 
 
 @dataclass(frozen=True)
