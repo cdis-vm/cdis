@@ -2232,6 +2232,66 @@ class RaiseWithCause(Opcode):
 
 
 @dataclass(frozen=True)
+class JumpIfNotMatchExceptType(Opcode):
+    """Top of stack is an exception type and the item below it is an exception.
+    If the exception is not an instance of the exception type, jump to target.
+    If the exception type is not a subclass of BaseException, raise TypeError.
+
+    Notes
+    -----
+        | JumpIfNotMatchExceptType
+        | Stack Effect: -2
+        | Prior: ..., exception, exception_type
+        | After: ...
+
+    Examples
+    --------
+    >>> try:
+    ...     pass
+    ... except ValueError:
+    ...     pass
+    StoreSynthetic(index=0)
+    LoadSynthetic(index=0)
+    LoadGlobal(name="ValueError")
+    JumpIfNotMatchExceptType(target=reraise)
+    Nop()
+    JumpTo(target=continue)
+
+    label reraise
+    Reraise()
+
+    label continue
+    """
+
+    target: Label
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return previous_stack_metadata.pop(2), previous_stack_metadata.pop(2)
+
+    def next_bytecode_indices(self, instruction: "Instruction") -> tuple[int, ...]:
+        return instruction.bytecode_index + 1, self.target.index
+
+    def execute(self, frame: "Frame") -> None:
+        exception_type, exception = frame.stack.pop(), frame.stack.pop()
+        if not isinstance(exception_type, type):
+            raise TypeError(
+                "catching classes that do not inherit from BaseException is not allowed"
+            )
+        elif not issubclass(exception_type, BaseException):
+            raise TypeError(
+                "catching classes that do not inherit from BaseException is not allowed"
+            )
+        elif not isinstance(exception, exception_type):
+            frame.bytecode_index = self.target.index - 1
+            return
+
+
+@dataclass(frozen=True)
 class IfTrue(Opcode):
     """Pops top of stack and jumps to target if it is truthy.
 

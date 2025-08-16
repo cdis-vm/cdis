@@ -1267,6 +1267,7 @@ class Bytecode:
             ):
                 try_start = Label()
                 try_end = Label()
+                except_start = Label()
                 except_finally = Label()
                 try_finally = Label()
 
@@ -1281,37 +1282,45 @@ class Bytecode:
 
                 out = out.add_op(opcode.JumpTo(try_finally))
 
-                for except_handler in handlers:
-                    handler_start = Label()
-                    handler_end = Label()
-                    out = out.add_label(handler_start)
-                    except_type = (
-                        out._evaluate_constant_expr(except_handler.type)
-                        if except_handler.type is not None
-                        else BaseException
+                out = out.add_exception_handler(
+                    ExceptionHandler(
+                        exception_class=BaseException,
+                        from_label=try_start,
+                        to_label=try_end,
+                        handler_label=except_start,
                     )
+                )
+
+                out = out.add_label(except_start)
+                out = out.new_synthetic()
+                caught_exception = out.current_synthetic
+                out = out.add_op(opcode.StoreSynthetic(index=caught_exception))
+                next_handler = Label()
+                for except_handler in handlers:
+                    if except_handler.type is not None:
+                        out = out.add_op(opcode.LoadSynthetic(index=caught_exception))
+                        out = out.with_expression_opcodes(
+                            except_handler.type, renames=renames
+                        )
+                        out = out.add_op(
+                            opcode.JumpIfNotMatchExceptType(target=next_handler)
+                        )
                     if except_handler.name is not None:
+                        out = out.add_op(opcode.LoadSynthetic(index=caught_exception))
                         out = out.add_op(opcode.StoreLocal(except_handler.name))
-                    else:
-                        out = out.add_op(opcode.Pop())
 
                     for statement in except_handler.body:
                         out = out.with_statement_opcodes(statement, renames)
 
-                    out = out.add_label(handler_end)
                     out = out.add_op(opcode.JumpTo(try_finally))
+                    out = out.add_label(next_handler)
+                    next_handler = Label()
 
-                    out = out.add_exception_handler(
-                        ExceptionHandler(
-                            exception_class=except_type,
-                            from_label=try_start,
-                            to_label=try_end,
-                            handler_label=handler_start,
-                        )
-                    )
-
+                out = out.add_op(opcode.LoadSynthetic(index=caught_exception))
+                out = out.free_synthetic()
                 out = out.add_label(except_finally)
                 out = out.pop_finally_block()
+                out = out.add_op(opcode.Pop())
 
                 out = out.add_exception_handler(
                     ExceptionHandler(

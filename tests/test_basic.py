@@ -411,6 +411,24 @@ def test_try():
     assert_bytecode_for_args(try_, SystemError)
 
 
+def test_try_dynamic_except():
+    def try_(error, guard1, guard2):
+        try:
+            raise error
+        except guard1:
+            return 1
+        except guard2:
+            return 2
+        except:  # noqa
+            return 3
+
+    assert_bytecode_for_args(try_, IOError, IOError, ValueError)
+    assert_bytecode_for_args(try_, IOError, ValueError, IOError)
+    assert_bytecode_for_args(try_, ValueError, IOError, ValueError)
+    assert_bytecode_for_args(try_, ValueError, ValueError, IOError)
+    assert_bytecode_for_args(try_, ValueError, 1, 2, check_exception_args=False)
+
+
 def test_try_finally_return():
     def try_():
         try:
