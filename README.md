@@ -38,7 +38,6 @@ which when executed, has the exact same behaviour as CPython's bytecode.
 ## Missing features
 
 - Using non-constant except types. (Planned)
-- Generator comprehensions (list, dict and set comprehensions are supported) (Planned)
 - Defining classes within functions (Planned)
 - User customizable optimization passes (Planned)
 - User customizable VM tracer (Planned)

@@ -914,6 +914,46 @@ class LoadAndBindInnerFunction(Opcode):
 
 
 @dataclass(frozen=True)
+class LoadAndBindInnerGenerator(Opcode):
+    """Loads and binds an inner generator.
+
+    Notes
+    -----
+        | LoadAndBindInnerGenerator
+        | Stack Effect: +1
+        | Prior: ...
+        | After: ..., bound_inner_generator
+
+    """
+
+    inner_generator: "ClassInfo"
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return (
+            previous_stack_metadata.pop(1).push(
+                ValueSource((instruction,), object)  # TODO: Typing
+            ),
+        )
+
+    def execute(self, frame: "Frame") -> None:
+        new_closure = frame.closure
+        new_class_attributes = copy(self.inner_generator.class_attribute_defaults)
+
+        for method, bytecode in self.inner_generator.methods.items():
+            new_class_attributes[method] = replace(bytecode, closure=new_closure)
+
+        generator_copy = replace(
+            self.inner_generator, class_attribute_defaults=new_class_attributes
+        )
+        frame.stack.append(generator_copy.as_class())
+
+
+@dataclass(frozen=True)
 class StoreGlobal(Opcode):
     """Stores the value at the top of the stack into a global variable.
 

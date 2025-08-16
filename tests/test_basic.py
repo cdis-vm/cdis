@@ -747,6 +747,34 @@ def test_list_comprehension_multiple_generators():
     assert_bytecode_for_args(list_comp, [1, 2], [3, 4, 5, 6])
 
 
+def test_generator_comprehension():
+    def generator_comp(numbers):
+        double = (number * 2 for number in numbers)
+        total = 0
+        for x in double:
+            total += x
+        return total
+
+    assert_bytecode_for_args(generator_comp, [])
+    assert_bytecode_for_args(generator_comp, [1, 2, 3])
+    assert_bytecode_for_args(generator_comp, [1, 2, 3, 4, 5])
+
+
+def test_generator_comprehension_multiple_generators():
+    def generator_comp(xs, ys):
+        sum = (x + y for x in xs for y in ys)
+        total = 0
+        for x in sum:
+            total += x
+        return total
+
+    assert_bytecode_for_args(generator_comp, [], [])
+    assert_bytecode_for_args(generator_comp, [1], [])
+    assert_bytecode_for_args(generator_comp, [], [2])
+    assert_bytecode_for_args(generator_comp, [1, 2, 3], [4, 5, 6])
+    assert_bytecode_for_args(generator_comp, [1], [2, 3])
+
+
 def test_inner_function():
     def outer_function(x):
         def inner_function(y):
