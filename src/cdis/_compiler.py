@@ -446,6 +446,25 @@ class Bytecode:
 
                 return out.add_op(opcode.CallWithBuilder())
 
+            case ast.Slice(lower=start, upper=stop, step=step):
+                out = self
+                if start is not None:
+                    out = out.with_expression_opcodes(start, renames)
+                else:
+                    out = out.add_op(opcode.LoadConstant(None))
+
+                if stop is not None:
+                    out = out.with_expression_opcodes(stop, renames)
+                else:
+                    out = out.add_op(opcode.LoadConstant(None))
+
+                if step is not None:
+                    out = out.with_expression_opcodes(step, renames)
+                else:
+                    out = out.add_op(opcode.LoadConstant(None))
+
+                return out.add_expression(expression, opcode.BuildSlice())
+
             case ast.List(elts):
                 out = self.add_op(opcode.NewList())
                 for elt in elts:

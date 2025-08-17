@@ -3844,6 +3844,47 @@ class ListToTuple(Opcode):
 
 
 @dataclass(frozen=True)
+class BuildSlice(Opcode):
+    """The top item on the stack is the step, the item below it the stop, and the item
+    below that the start.
+    Build a new slice from the start, end, and step. Equivalent to slice(start, stop, step)
+
+    Notes
+    -----
+        | BuildSlice
+        | Stack Effect: -3
+        | Prior: ..., start, end, step
+        | After: ..., slice
+
+    Examples
+    --------
+    >>> items[1:3]
+    LoadLocal(name="items")
+    LoadConstant(constant=1)
+    LoadConstant(constant=3)
+    LoadConstant(constant=None)
+    BuildSlice()
+    GetItem()
+    """
+
+    def next_stack_metadata(
+        self,
+        instruction: "Instruction",
+        bytecode: "Bytecode",
+        previous_stack_metadata: StackMetadata,
+    ) -> tuple[StackMetadata, ...]:
+        return (
+            previous_stack_metadata.pop(3).push(
+                ValueSource(sources=(instruction,), value_type=slice)
+            ),
+        )
+
+    def execute(self, frame: "Frame") -> None:
+        step, stop, start = frame.stack.pop(), frame.stack.pop(), frame.stack.pop()
+        frame.stack.append(slice(start, stop, step))
+
+
+@dataclass(frozen=True)
 class GetItem(Opcode):
     """Pops off the top two items on the stack to get an item.
     The top of stack is the index, and the item before it is the collection.

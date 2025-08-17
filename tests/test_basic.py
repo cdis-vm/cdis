@@ -512,6 +512,14 @@ def test_tuple():
     assert_bytecode_for_args(tuple_, 2)
 
 
+def test_slice():
+    def slice_(arg):
+        return arg[:2]
+
+    assert_bytecode_for_args(slice_, [1, 2, 3, 4])
+    assert_bytecode_for_args(slice_, [4, 3, 2, 1, 0])
+
+
 def test_set():
     def set_(arg):
         return {1, arg, "3"}
