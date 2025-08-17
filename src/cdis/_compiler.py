@@ -342,8 +342,15 @@ class Bytecode:
                     )
                 elif name in self.local_names:
                     return self.add_expression(expression, opcode.LoadLocal(name))
-                else:
+                elif (
+                    name in self.global_names
+                    or self.function_type is not opcode.FunctionType.CLASS_BODY
+                ):
                     return self.add_expression(expression, opcode.LoadGlobal(name))
+                else:
+                    return self.add_ops(
+                        opcode.LoadSynthetic(0), opcode.LoadTypeAttrOrGlobal(name=name)
+                    )
 
             case ast.NamedExpr(target, value):
                 out = self.with_expression_opcodes(value, renames)
@@ -890,9 +897,9 @@ class Bytecode:
                 opcode.Dup(),
                 opcode.Dup(),
                 opcode.StoreSynthetic(index=exit_managers[-1]),
-                opcode.LoadTypeAttr(name=enter_method),
+                opcode.LoadObjectTypeAttr(name=enter_method),
                 opcode.Swap(),
-                opcode.LoadTypeAttr(name=exit_method),
+                opcode.LoadObjectTypeAttr(name=exit_method),
                 opcode.StoreSynthetic(index=exit_callables[-1]),
                 opcode.CreateCallBuilder(),
                 opcode.LoadSynthetic(index=exit_managers[-1]),
@@ -1055,20 +1062,40 @@ class Bytecode:
                         ),
                     )
                 elif name in self.local_names:
-                    return AssignmentCode(
-                        stack_items=0,
-                        load_target=lambda b: b,
-                        load_current_value=lambda b: b.add_expression(
-                            expression, opcode.LoadLocal(name)
-                        ),
-                        store_value=lambda b: b.add_expression(
-                            expression, opcode.StoreLocal(name)
-                        ),
-                        delete_value=lambda b: b.add_expression(
-                            expression, opcode.DeleteLocal(name)
-                        ),
-                    )
-                else:
+                    if self.function_type is not opcode.FunctionType.CLASS_BODY:
+                        return AssignmentCode(
+                            stack_items=0,
+                            load_target=lambda b: b,
+                            load_current_value=lambda b: b.add_expression(
+                                expression, opcode.LoadLocal(name)
+                            ),
+                            store_value=lambda b: b.add_expression(
+                                expression, opcode.StoreLocal(name)
+                            ),
+                            delete_value=lambda b: b.add_expression(
+                                expression, opcode.DeleteLocal(name)
+                            ),
+                        )
+                    else:
+                        # class body uses a mapping stored in the first synthetic
+                        return AssignmentCode(
+                            stack_items=0,
+                            load_target=lambda b: b,
+                            load_current_value=lambda b: b.add_ops(
+                                opcode.LoadSynthetic(0),
+                                opcode.LoadTypeAttrOrGlobal(name),
+                            ),
+                            store_value=lambda b: b.add_ops(
+                                opcode.LoadSynthetic(0), opcode.StoreTypeAttr(name)
+                            ),
+                            delete_value=lambda b: b.add_ops(
+                                opcode.LoadSynthetic(0), opcode.DeleteTypeAttr(name)
+                            ),
+                        )
+                elif (
+                    name in self.global_names
+                    or self.function_type is not opcode.FunctionType.CLASS_BODY
+                ):
                     return AssignmentCode(
                         stack_items=0,
                         load_target=lambda b: b,
@@ -1080,6 +1107,20 @@ class Bytecode:
                         ),
                         delete_value=lambda b: b.add_expression(
                             expression, opcode.DeleteGlobal(name)
+                        ),
+                    )
+                else:
+                    return AssignmentCode(
+                        stack_items=0,
+                        load_target=lambda b: b,
+                        load_current_value=lambda b: b.add_ops(
+                            opcode.LoadSynthetic(0), opcode.LoadTypeAttrOrGlobal(name)
+                        ),
+                        store_value=lambda b: b.add_ops(
+                            opcode.LoadSynthetic(0), opcode.StoreTypeAttr(name)
+                        ),
+                        delete_value=lambda b: b.add_ops(
+                            opcode.LoadSynthetic(0), opcode.DeleteTypeAttr(name)
                         ),
                     )
 
@@ -1216,7 +1257,7 @@ class Bytecode:
                         | opcode.FunctionType.ASYNC_GENERATOR
                     ):
                         is_generator_or_async_function = True
-                    case opcode.FunctionType.FUNCTION:
+                    case opcode.FunctionType.FUNCTION | opcode.FunctionType.CLASS_BODY:
                         is_generator_or_async_function = False
                     case _:
                         raise RuntimeError(f"Unknown function type {out.function_type}")
@@ -1542,6 +1583,44 @@ class Bytecode:
                     pass  # TODO
                 out = out.with_assignment_opcodes(
                     ast.Name(id=func_def.name, ctx=ast.Store), renames
+                )
+                return out
+
+            case ast.ClassDef(
+                name=name,
+                bases=bases,
+                keywords=keywords,
+                body=body,
+                decorator_list=decorators,
+            ):
+                body_bytecode = self._create_inner_class_bytecode(statement)
+                out = self
+                out = out.add_op(opcode.NewList())
+
+                for base in bases:
+                    out = out.with_expression_opcodes(base, renames)
+                    out = out.add_op(opcode.ListAppend())
+                else:
+                    out = out.add_op(opcode.ListToTuple())
+
+                out = out.add_op(opcode.NewDict())
+                for keyword in keywords:
+                    out = out.add_op(opcode.LoadConstant(keyword.arg))
+                    out = out.with_expression_opcodes(keyword.value, renames)
+                    out = out.add_op(opcode.DictPut())
+
+                out = out.add_op(
+                    opcode.LoadAndBindInnerClass(
+                        class_name=name, class_body=body_bytecode
+                    )
+                )
+
+                for decorator in decorators:
+                    # TODO
+                    pass
+
+                out = out.with_assignment_opcodes(
+                    ast.Name(id=name, ctx=ast.Store), renames
                 )
                 return out
 
@@ -1876,6 +1955,32 @@ class Bytecode:
             ),
         )
 
+    def _create_inner_class_bytecode(self, class_def: ast.ClassDef) -> Bytecode:
+        signature = inspect.Signature(
+            parameters=(
+                inspect.Parameter(
+                    "_attribute_mapping",
+                    kind=inspect.Parameter.POSITIONAL_ONLY,
+                ),
+            )
+        )
+        used_variables = find_used_variables(
+            class_def, self.local_names | self.cell_names | self.free_names
+        )
+        free_name_set = self.cell_names & used_variables.variable_names
+        closure = (CellType(),) * len(free_name_set)
+
+        inner_bytecode = ast_to_bytecode(
+            class_def,
+            signature,
+            self.globals,
+            closure,
+            tuple(free_name_set),
+            tuple(used_variables.cell_names),
+            tuple(used_variables.variable_names),
+        )
+        return inner_bytecode
+
     def _create_lambda(self, lambda_def: ast.Lambda) -> InnerFunction:
         signature_and_parameters = get_signature_from_arguments(lambda_def.args)
         used_variables = find_used_variables(
@@ -1979,7 +2084,8 @@ def get_signature_from_arguments(args: ast.arguments) -> SignatureAndParameters:
 
 
 def find_used_variables(
-    func_def: ast.FunctionDef | ast.Lambda, outer_variables: frozenset[str]
+    func_def: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
+    outer_variables: frozenset[str],
 ) -> UsedVariables:
     variable_names = set()
     cell_names = set()
@@ -2030,23 +2136,34 @@ def find_used_variables(
 
     match func_def:
         # Do not capture body; that make it a str instead of an ast object!
-        case ast.FunctionDef():
+        case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
             for statement in func_def.body:
                 iterate_node(statement)
 
         case ast.Lambda():
             iterate_node(func_def.body)
 
-    for arg in func_def.args.args:
-        variable_names.add(arg.arg)
-    for arg in func_def.args.posonlyargs:
-        variable_names.add(arg.arg)
-    for arg in func_def.args.kwonlyargs:
-        variable_names.add(arg.arg)
-    if func_def.args.vararg is not None:
-        variable_names.add(func_def.args.vararg.arg)
-    if func_def.args.kwarg is not None:
-        variable_names.add(func_def.args.kwarg.arg)
+        case _:
+            raise NotImplementedError(
+                f"Not implemented function ast type: {type(func_def)}"
+            )
+
+    match func_def:
+        case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Lambda():
+            for arg in func_def.args.args:
+                variable_names.add(arg.arg)
+            for arg in func_def.args.posonlyargs:
+                variable_names.add(arg.arg)
+            for arg in func_def.args.kwonlyargs:
+                variable_names.add(arg.arg)
+            if func_def.args.vararg is not None:
+                variable_names.add(func_def.args.vararg.arg)
+            if func_def.args.kwarg is not None:
+                variable_names.add(func_def.args.kwarg.arg)
+        case ast.ClassDef():
+            pass
+        case _:
+            raise RuntimeError(f"Not implemented function ast type: {type(func_def)}")
 
     return UsedVariables(
         variable_names=frozenset(variable_names), cell_names=frozenset(cell_names)
@@ -2107,6 +2224,16 @@ def is_generator(function_ast: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
+def _class_body_prologue(bytecode: Bytecode) -> Bytecode:
+    # Make first synthetic store the generator object
+    bytecode = bytecode.new_synthetic()
+    bytecode = bytecode.add_ops(
+        opcode.LoadLocal(name="_attribute_mapping"),
+        opcode.StoreSynthetic(index=0),
+    )
+    return bytecode
+
+
 def _generator_function_prologue(bytecode: Bytecode) -> Bytecode:
     # Make first synthetic store the generator object
     bytecode = bytecode.new_synthetic()
@@ -2150,7 +2277,7 @@ def _generator_function_prologue(bytecode: Bytecode) -> Bytecode:
 
 
 def ast_to_bytecode(
-    function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
+    function_ast: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
     signature: inspect.Signature,
     function_globals: dict[str, object],
     function_closure: tuple[CellType, ...],
@@ -2183,8 +2310,11 @@ def ast_to_bytecode(
         globals=function_globals,
         closure=closure_dict,
     )
+    is_class_body = bytecode.function_type is opcode.FunctionType.CLASS_BODY
     if is_generator_or_async_function:
         bytecode = _generator_function_prologue(bytecode)
+    elif is_class_body:
+        bytecode = _class_body_prologue(bytecode)
 
     parameter_cells = (cell_names - frozenset(free_names)) & {
         name for name in variable_names[: len(signature.parameters)]

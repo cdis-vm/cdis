@@ -1310,3 +1310,40 @@ def test_match_literal():
     assert_bytecode_for_args(function, "name")
     assert_bytecode_for_args(function, "str")
     assert_bytecode_for_args(function, set())
+
+
+def test_inner_class():
+    def test(value):
+        class C:
+            age = value
+
+        return C.age
+
+    assert_bytecode_for_args(test, 10)
+
+
+def test_inner_class_custom_meta():
+    class MyMeta(type):
+        @classmethod
+        def __prepare__(cls, *args, **kwargs):
+            return {"age": 10}
+
+    def test(value):
+        class C(metaclass=MyMeta):
+            pass
+
+        return C.age
+
+    assert_bytecode_for_args(test, 10)
+
+
+def test_inner_class_global_then_local():
+    def test(value):
+        class C:
+            a = len(value)
+            len = 3
+            b = len + 1
+
+        return C.a + C.b
+
+    assert_bytecode_for_args(test, [1, 2, 3])

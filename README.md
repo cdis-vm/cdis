@@ -37,7 +37,6 @@ which when executed, has the exact same behaviour as CPython's bytecode.
 
 ## Missing features
 
-- Defining classes within functions (Planned)
 - User customizable optimization passes (Planned)
 - User customizable VM tracer (Planned)
 - A guide on how to actually use `cdis` (Planned).
