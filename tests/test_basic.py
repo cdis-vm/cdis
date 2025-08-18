@@ -826,6 +826,19 @@ def test_inner_function_with_defaults():
     assert_bytecode_for_args(outer_function, 3)
 
 
+def test_inner_function_with_annotations():
+    def outer_function(x):
+        def inner_function(y: x * 2):
+            pass
+
+        y = inner_function.__annotations__["y"]
+        return x + y
+
+    assert_bytecode_for_args(outer_function, 1)
+    assert_bytecode_for_args(outer_function, 2)
+    assert_bytecode_for_args(outer_function, 3)
+
+
 def test_inner_function_with_decorators():
     def decorator(func):
         def wrapper(*args, **kwargs):

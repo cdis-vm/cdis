@@ -7,7 +7,7 @@ from cdis import bytecode as opcode
 from dataclasses import dataclass, replace, field
 from functools import cached_property
 from types import FunctionType, CellType
-from typing import cast, Callable, Iterable
+from typing import cast, Callable, Iterable, Union
 import inspect
 import ast
 
@@ -47,6 +47,7 @@ class Bytecode:
     method_type: opcode.MethodType
     generator_instance_parameter: str | None
     signature: inspect.Signature
+    annotate_function: Union["Bytecode", None] = None
     instructions: tuple[Instruction, ...] = ()
     closure: dict[str, CellType] = field(default_factory=dict)
     globals: dict[str, object] = field(default_factory=dict)
@@ -340,7 +341,10 @@ class Bytecode:
                     return self.add_expression(
                         expression, opcode.LoadCell(name, name in self.free_names)
                     )
-                elif name in self.local_names:
+                elif (
+                    name in self.local_names
+                    and self.function_type is not opcode.FunctionType.CLASS_BODY
+                ):
                     return self.add_expression(expression, opcode.LoadLocal(name))
                 elif (
                     name in self.global_names
@@ -1961,7 +1965,93 @@ class Bytecode:
             f"Missing return in case {type(pattern)} in with_match_pattern_opcodes"
         )
 
-    def _create_inner_function(self, func_def: ast.FunctionDef) -> InnerFunction:
+    def _create_annotation_dict(
+        self,
+        all_args: dict[str, ast.expr],
+        value_converter: Callable[["Bytecode", ast.expr], "Bytecode"],
+    ) -> "Bytecode":
+        annotate_function = self
+        annotate_function = annotate_function.add_op(opcode.NewDict())
+        for arg, annotation in all_args.items():
+            annotate_function = annotate_function.add_op(opcode.LoadConstant(arg))
+            annotate_function = value_converter(annotate_function, annotation)
+            annotate_function = annotate_function.add_op(opcode.DictPut())
+
+        annotate_function = annotate_function.add_op(opcode.ReturnValue())
+        return annotate_function
+
+    def _create_annotation_function(
+        self,
+        used_variables: "UsedVariables",
+        free_name_set,
+        func_def: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    ):
+        annotate_function = Bytecode(
+            function_name="__annotate__",
+            function_type=opcode.FunctionType.FUNCTION,
+            method_type=opcode.MethodType.VIRTUAL,
+            generator_instance_parameter="_generator",
+            signature=inspect.Signature(
+                parameters=(
+                    opcode.Parameter(
+                        name="format", kind=inspect.Parameter.POSITIONAL_OR_KEYWORD
+                    ),
+                )
+            ),
+            local_names=frozenset(),
+            cell_names=frozenset(used_variables.cell_names),
+            free_names=frozenset(free_name_set),
+            global_names=self.global_names,
+            globals=self.globals,
+            closure=self.closure,
+        )
+
+        arg_info = _get_arg_dict(func_def)
+        check_format_forward_ref = opcode.Label()
+        check_format_source = opcode.Label()
+        fail_label = opcode.Label()
+        annotate_function = annotate_function.add_ops(
+            opcode.LoadLocal(name="format"),
+            opcode.LoadConstant(1),  # value
+            opcode.BinaryOp(operator=opcode.BinaryOperator.Eq),
+            opcode.IfFalse(target=check_format_forward_ref),
+        )
+
+        annotate_function = annotate_function._create_annotation_dict(
+            arg_info, lambda b, e: b.with_expression_opcodes(e, {})
+        )
+
+        annotate_function = annotate_function.add_label(check_format_forward_ref)
+        annotate_function = annotate_function.add_ops(
+            opcode.LoadLocal(name="format"),
+            opcode.LoadConstant(2),  # forward_ref
+            opcode.BinaryOp(operator=opcode.BinaryOperator.Eq),
+            opcode.IfFalse(target=check_format_source),
+        )
+        annotate_function = annotate_function.add_ops(
+            opcode.LoadConstant(NotImplementedError), opcode.Raise()
+        )
+
+        annotate_function = annotate_function.add_label(check_format_source)
+        annotate_function = annotate_function.add_ops(
+            opcode.LoadLocal(name="format"),
+            opcode.LoadConstant(3),  # source
+            opcode.BinaryOp(operator=opcode.BinaryOperator.Eq),
+            opcode.IfFalse(target=fail_label),
+        )
+        annotate_function = annotate_function.add_ops(
+            opcode.LoadConstant(NotImplementedError), opcode.Raise()
+        )
+
+        annotate_function = annotate_function.add_label(fail_label)
+        annotate_function = annotate_function.add_ops(
+            opcode.LoadConstant(NotImplementedError), opcode.Raise()
+        )
+        return annotate_function
+
+    def _create_inner_function(
+        self, func_def: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> InnerFunction:
         signature_and_parameters = get_signature_from_arguments(func_def.args)
         used_variables = find_used_variables(
             func_def, self.local_names | self.cell_names | self.free_names
@@ -1978,8 +2068,12 @@ class Bytecode:
             tuple(used_variables.cell_names),
             tuple(used_variables.variable_names),
         )
+
         return InnerFunction(
             bytecode=inner_bytecode,
+            annotate_function=self._create_annotation_function(
+                used_variables, free_name_set, func_def
+            ),
             parameters_with_defaults=tuple(
                 signature_and_parameters.parameters_with_defaults
             ),
@@ -2006,7 +2100,7 @@ class Bytecode:
             self.globals,
             closure,
             tuple(free_name_set),
-            tuple(used_variables.cell_names),
+            tuple(),
             tuple(used_variables.variable_names),
         )
         return inner_bytecode
@@ -2029,8 +2123,34 @@ class Bytecode:
         )
         return InnerFunction(
             bytecode=inner_bytecode,
+            annotate_function=self._create_annotation_function(
+                used_variables, free_name_set, lambda_def
+            ),
             parameters_with_defaults=signature_and_parameters.parameters_with_defaults,
         )
+
+
+@cached_property
+def annotations(self):
+    from ._vm import CDisVM
+
+    if self.annotate_function is None:
+        out = {
+            key: value.annotation
+            for key, value in self.signature.parameters.items()
+            if value.annotation is not inspect.Parameter.empty
+        }
+        if self.signature.return_annotation is not inspect.Parameter.empty:
+            return out | {"return": self.signature.return_annotation}
+        else:
+            return out
+
+    vm = CDisVM()
+    return vm.run(self.annotate_function, 1)
+
+
+Bytecode.__annotations__ = annotations
+annotations.__set_name__(Bytecode, "__annotations__")
 
 
 @dataclass(frozen=True)
@@ -2149,7 +2269,7 @@ def find_used_variables(
                     f"Not implemented assignment: {type(assignment_target)}"
                 )
 
-    def iterate_node(node):
+    def iterate_node(node, all_is_outer: bool):
         for child in ast.iter_child_nodes(node):
             match child:
                 case ast.Assign(targets):
@@ -2157,21 +2277,45 @@ def find_used_variables(
                         add_names_to_variable_names(target)
 
                 case ast.Name(id=name):
-                    if name in outer_variables:
+                    if all_is_outer or name in outer_variables:
                         variable_names.add(name)
                         cell_names.add(name)
 
                 case _:
-                    iterate_node(child)
+                    iterate_node(child, all_is_outer)
+
+        match node:
+            case ast.FunctionDef() | ast.AsyncFunctionDef():
+                iterate_node(node.args, True)
+                if node.returns is not None:
+                    iterate_node(node.returns, True)
+
+                variable_names.add(node.name)
+                if node.name in outer_variables:
+                    cell_names.add(node.name)
+            case ast.ClassDef():
+                variable_names.add(node.name)
+                if node.name in outer_variables:
+                    cell_names.add(node.name)
+            case ast.Lambda():
+                iterate_node(node.args, True)
 
     match func_def:
         # Do not capture body; that make it a str instead of an ast object!
-        case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+        case ast.FunctionDef() | ast.AsyncFunctionDef():
             for statement in func_def.body:
-                iterate_node(statement)
+                iterate_node(statement, False)
+            for value in _get_arg_dict(func_def).values():
+                iterate_node(value, False)
 
         case ast.Lambda():
-            iterate_node(func_def.body)
+            iterate_node(func_def.body, False)
+            for value in _get_arg_dict(func_def).values():
+                iterate_node(value, False)
+
+        case ast.ClassDef():
+            for statement in func_def.body:
+                iterate_node(statement, False)
 
         case _:
             raise NotImplementedError(
@@ -2200,6 +2344,27 @@ def find_used_variables(
     )
 
 
+def _get_arg_dict(
+    func_def: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> dict[str, ast.expr]:
+    arg_info = func_def.args
+    all_args = [*arg_info.posonlyargs, *arg_info.args, *arg_info.kwonlyargs]
+
+    if arg_info.vararg is not None:
+        all_args.append(arg_info.vararg)
+
+    if arg_info.kwarg is not None:
+        all_args.append(arg_info.kwarg)
+
+    out = {arg.arg: arg.annotation for arg in all_args if arg.annotation is not None}
+
+    if hasattr(func_def, "returns"):
+        if func_def.returns is not None:
+            out["return"] = func_def.returns
+
+    return out
+
+
 def unindent(code: str) -> str:
     lowest_indent = float("inf")
     for line in code.splitlines():
@@ -2223,6 +2388,7 @@ def to_bytecode(function: FunctionType) -> Bytecode | opcode.ClassInfo:
     source = inspect.getsource(function)
     source = unindent(source)
     function_ast: ast.FunctionDef = cast(ast.FunctionDef, ast.parse(source).body[0])
+    used_vars = find_used_variables(function_ast, frozenset())
 
     return ast_to_bytecode(
         function_ast,
@@ -2235,8 +2401,14 @@ def to_bytecode(function: FunctionType) -> Bytecode | opcode.ClassInfo:
         function.__globals__,
         function.__closure__,
         function.__code__.co_freevars,
-        function.__code__.co_cellvars,
-        function.__code__.co_varnames,
+        # TODO: Remove __code__ usage
+        tuple(
+            frozenset(used_vars.cell_names) | frozenset(function.__code__.co_cellvars)
+        ),
+        tuple(
+            frozenset(used_vars.variable_names)
+            | frozenset(function.__code__.co_varnames)
+        ),
     )
 
 
@@ -2347,7 +2519,7 @@ def ast_to_bytecode(
         bytecode = _class_body_prologue(bytecode)
 
     parameter_cells = (cell_names - frozenset(free_names)) & {
-        name for name in variable_names[: len(signature.parameters)]
+        name for name in variable_names if name in signature.parameters.keys()
     }
 
     for parameter_cell_var in parameter_cells:
@@ -2772,7 +2944,7 @@ def lambda_ast_to_bytecode(
     )
 
     parameter_cells = (cell_names - frozenset(free_names)) & {
-        name for name in variable_names[: len(signature.parameters)]
+        name for name in variable_names if name in signature.parameters.keys()
     }
     for parameter_cell_var in parameter_cells:
         bytecode = bytecode.add_op(opcode.LoadLocal(name=parameter_cell_var))

@@ -508,7 +508,11 @@ class InnerFunction:
     """Represents a function defined inside another function."""
 
     bytecode: "Bytecode"
+    """The bytecode of the body of the inner function."""
+    annotate_function: "Bytecode"
+    """A function to compute the annotation dict, as defined by https://peps.python.org/pep-0649/"""
     parameters_with_defaults: tuple[str, ...]
+    """Parameters with default values."""
 
     @property
     def name(self) -> str:
@@ -552,7 +556,13 @@ class InnerFunction:
                 new_parameters.append(parameter)
 
         new_signature = original_signature.replace(parameters=new_parameters)
-        return replace(self.bytecode, signature=new_signature, closure=new_closure)
+        new_annotate_function = replace(self.annotate_function, closure=new_closure)
+        return replace(
+            self.bytecode,
+            annotate_function=new_annotate_function,
+            signature=new_signature,
+            closure=new_closure,
+        )
 
 
 class Opcode(ABC):
