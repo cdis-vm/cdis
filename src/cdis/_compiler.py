@@ -1599,7 +1599,13 @@ class Bytecode:
                     out = out.with_expression_opcodes(default_arg, renames)
                 out = out.add_op(opcode.LoadAndBindInnerFunction(inner_function))
                 for decorator in func_def.decorator_list:
-                    pass  # TODO
+                    out = out.with_expression_opcodes(decorator, renames)
+                    out = out.add_ops(
+                        opcode.CreateCallBuilder(),
+                        opcode.Swap(),
+                        opcode.WithPositionalArg(index=0),
+                        opcode.CallWithBuilder(),
+                    )
                 out = out.with_assignment_opcodes(
                     ast.Name(id=func_def.name, ctx=ast.Store), renames
                 )
@@ -1635,8 +1641,13 @@ class Bytecode:
                 )
 
                 for decorator in decorators:
-                    # TODO
-                    pass
+                    out = out.with_expression_opcodes(decorator, renames)
+                    out = out.add_ops(
+                        opcode.CreateCallBuilder(),
+                        opcode.Swap(),
+                        opcode.WithPositionalArg(index=0),
+                        opcode.CallWithBuilder(),
+                    )
 
                 out = out.with_assignment_opcodes(
                     ast.Name(id=name, ctx=ast.Store), renames

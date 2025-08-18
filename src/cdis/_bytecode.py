@@ -3209,17 +3209,49 @@ class PreparedCall:
     args: tuple[object, ...] = ()
     kwargs: dict[str, object] = field(default_factory=dict)
 
+    @staticmethod
+    def _wrap_bytecode(vm: "CDisVM", bytecode: "Bytecode") -> Callable:
+        def wrapper(*args, **kwargs):
+            return vm.run(bytecode, *args, **kwargs)
+
+        return wrapper
+
+    @staticmethod
+    def _convert_args(vm: "CDisVM", args: tuple[object, ...]) -> tuple[object, ...]:
+        from ._compiler import Bytecode
+
+        out = []
+        for arg in args:
+            if isinstance(arg, Bytecode):
+                out.append(PreparedCall._wrap_bytecode(vm, arg))
+            else:
+                out.append(arg)
+        return tuple(out)
+
+    @staticmethod
+    def _convert_kwargs(vm: "CDisVM", kwargs: dict[str, object]) -> dict[str, object]:
+        from ._compiler import Bytecode
+
+        out = {}
+
+        for key, value in kwargs.items():
+            if isinstance(value, Bytecode):
+                out[key] = PreparedCall._wrap_bytecode(vm, value)
+            else:
+                out[key] = value
+
+        return out
+
     def invoke(self, vm: "CDisVM"):
         from ._compiler import Bytecode
-        from ._vm import Frame
+
+        args = PreparedCall._convert_args(vm, self.args)
+        kwargs = PreparedCall._convert_kwargs(vm, self.kwargs)
 
         if isinstance(self.func, Bytecode):
-            new_frame = Frame.new_frame(vm)
-            new_frame.bind_bytecode_to_frame(self.func, *self.args, **self.kwargs)
-            vm.frames.append(new_frame)
-            return self.func
+            return vm.run(self.func, *args, **kwargs)
         else:
-            return self.func(*self.args, **self.kwargs)
+            return self.func(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -3487,16 +3519,8 @@ class CallWithBuilder(Opcode):
     def execute(self, frame: "Frame") -> None:
         vm = frame.vm
         prepared_call = frame.stack.pop()
-        old_frame_size = len(vm.frames)
         result = prepared_call.invoke(vm)
-        if old_frame_size == len(vm.frames):
-            # PreparedCall was for Callable/C Function
-            frame.stack.append(result)
-        else:
-            # PreparedCall was for Bytecode
-            while old_frame_size != len(vm.frames):
-                vm.step(result)
-            #  ReturnValue of the last frame appended the result to our frame's stack
+        frame.stack.append(result)
 
 
 ########################################

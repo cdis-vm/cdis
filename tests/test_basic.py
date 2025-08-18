@@ -826,6 +826,25 @@ def test_inner_function_with_defaults():
     assert_bytecode_for_args(outer_function, 3)
 
 
+def test_inner_function_with_decorators():
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            return func(1, *args, **kwargs)
+
+        return wrapper
+
+    def outer_function(x):
+        @decorator
+        def inner_function(y, z):
+            return x + y + z
+
+        return inner_function(x * 2)
+
+    assert_bytecode_for_args(outer_function, 1)
+    assert_bytecode_for_args(outer_function, 2)
+    assert_bytecode_for_args(outer_function, 3)
+
+
 def test_lambda_function():
     def outer_function(x):
         adder = lambda y: x + y  # noqa
@@ -1328,6 +1347,20 @@ def test_inner_class():
         return C.age
 
     assert_bytecode_for_args(test, 10)
+
+
+def test_inner_class_with_decorator():
+    def decorator(cls):
+        cls.age = 10
+
+    def test():
+        @decorator
+        class C:
+            pass
+
+        return C.age
+
+    assert_bytecode_for_args(test)
 
 
 def test_inner_class_custom_meta():
