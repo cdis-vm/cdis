@@ -7,12 +7,13 @@ build-backend = "hatchling.build"
 name = "cdis"
 version = "0.0.1a0"
 requires-python = ">=3.10"
+description = "A consistent disassmbly of Python code"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICEN[CS]E*"]
 keywords = ["dis", "cdis", "disassembly", "code generation", "code analysis"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Code Generators",
