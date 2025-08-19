@@ -40,3 +40,8 @@ testpaths="tests"
 
 
 [tool.ruff]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__ files may use star imports, since they may be merging several sub_modules
+# which each define an appropiate __all__
+"__init__.py" = ["F403"]

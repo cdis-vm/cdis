@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from functools import cached_property
 
-from ._bytecode import Instruction, StackMetadata, ValueSource, FunctionType
+from .opcode import Instruction, StackMetadata, ValueSource, FunctionType
 
 if TYPE_CHECKING:
     from _compiler import Bytecode

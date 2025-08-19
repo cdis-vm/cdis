@@ -1,9 +1,8 @@
 import types
-from dis import Bytecode
 
-from ._bytecode import Instruction, Label, InnerFunction, StackMetadata
+from .opcode import Instruction, Label, InnerFunction, StackMetadata
 from ._type_analysis import resolve_stack_metadata
-from cdis import bytecode as opcode
+from cdis import opcode
 from dataclasses import dataclass, replace, field
 from functools import cached_property
 from types import FunctionType, CellType
@@ -63,7 +62,7 @@ class Bytecode:
     yield_labels: tuple[Label, ...] = ()
     exception_handlers: tuple[ExceptionHandler, ...] = ()
     finally_blocks: tuple[tuple[ast.stmt, ...], ...] = ()
-    deferred_processors: tuple[Callable[[Bytecode], Bytecode], ...] = ()
+    deferred_processors: tuple[Callable[["Bytecode"], "Bytecode"], ...] = ()
 
     @cached_property
     def stack_metadata(self) -> tuple[StackMetadata, ...]:
@@ -165,7 +164,7 @@ class Bytecode:
         return replace(self, finally_blocks=self.finally_blocks[:-1])
 
     def add_deferred_processor(
-        self, processor: Callable[[Bytecode], Bytecode]
+        self, processor: Callable[["Bytecode"], "Bytecode"]
     ) -> "Bytecode":
         return replace(
             self, deferred_processors=self.deferred_processors + (processor,)
@@ -1993,7 +1992,7 @@ class Bytecode:
             generator_instance_parameter="_generator",
             signature=inspect.Signature(
                 parameters=(
-                    opcode.Parameter(
+                    inspect.Parameter(
                         name="format", kind=inspect.Parameter.POSITIONAL_OR_KEYWORD
                     ),
                 )
@@ -2079,7 +2078,7 @@ class Bytecode:
             ),
         )
 
-    def _create_inner_class_bytecode(self, class_def: ast.ClassDef) -> Bytecode:
+    def _create_inner_class_bytecode(self, class_def: ast.ClassDef) -> "Bytecode":
         signature = inspect.Signature(
             parameters=(
                 inspect.Parameter(
