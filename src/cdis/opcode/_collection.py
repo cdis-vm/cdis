@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Iterator, AsyncIterator, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import BytecodeDescriptor
     from .._vm import Frame
 
 
@@ -27,7 +27,7 @@ class NewList(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -62,7 +62,7 @@ class NewSet(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -95,7 +95,7 @@ class NewDict(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -131,7 +131,7 @@ class ListAppend(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -164,7 +164,7 @@ class ListExtend(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -197,7 +197,7 @@ class SetAdd(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -230,7 +230,7 @@ class SetUpdate(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -265,7 +265,7 @@ class DictPut(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(2),)
@@ -299,7 +299,7 @@ class DictUpdate(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -334,7 +334,7 @@ class ListToTuple(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -375,7 +375,7 @@ class BuildSlice(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -412,7 +412,7 @@ class GetItem(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -451,7 +451,7 @@ class SetItem(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(3),)
@@ -484,7 +484,7 @@ class DeleteItem(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(2),)
@@ -518,7 +518,7 @@ class GetIterator(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -560,7 +560,7 @@ class GetAwaitableIterator(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -628,7 +628,7 @@ class GetAsyncIterator(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -681,7 +681,7 @@ class GetAsyncNext(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -735,7 +735,7 @@ class GetNextElseJumpTo(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         # TODO: Get type of iterable
@@ -803,7 +803,7 @@ class UnpackElements(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         values = []
@@ -895,7 +895,7 @@ class UnpackMapping(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         values = [ValueSource(sources=(instruction,), value_type=object)] * len(
@@ -950,7 +950,7 @@ class IsContainedIn(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (

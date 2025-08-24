@@ -3,22 +3,22 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from functools import cached_property
 
-from .opcode import Instruction, StackMetadata, ValueSource, FunctionType
+from .opcode import Instruction, StackMetadata, ValueSource
 
 if TYPE_CHECKING:
-    from _compiler import Bytecode
+    from .compiler._api import BytecodeDescriptor
 
 
 @dataclass(frozen=True, kw_only=True)
 class BasicBlock:
-    bytecode: "Bytecode"
+    bytecode_descriptor: "BytecodeDescriptor"
     start_index_inclusive: int
     end_index_exclusive: int
 
     @cached_property
     def instructions(self) -> tuple[Instruction, ...]:
         return tuple(
-            self.bytecode.instructions[
+            self.bytecode_descriptor.instructions[
                 self.start_index_inclusive : self.end_index_exclusive
             ]
         )
@@ -51,13 +51,16 @@ class BasicBlock:
         return hash(self.start_index_inclusive)
 
 
-def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
+def resolve_stack_metadata(
+    bytecode_descriptor: "BytecodeDescriptor",
+) -> tuple[StackMetadata, ...]:
     leader_indices = []
     # Set initially to True so first instruction get added as leader
     next_instruction_was_skipped = True
-    for instruction in bytecode.instructions:
+    for instruction in bytecode_descriptor.instructions:
         if next_instruction_was_skipped or any(
-            instruction.bytecode_index == label.index for label in bytecode.labels
+            instruction.bytecode_index == label.index
+            for label in bytecode_descriptor.labels
         ):
             leader_indices.append(instruction.bytecode_index)
         next_instruction_was_skipped = (
@@ -69,7 +72,7 @@ def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
 
     for index in range(len(leader_indices) - 1):
         basic_block = BasicBlock(
-            bytecode=bytecode,
+            bytecode_descriptor=bytecode_descriptor,
             start_index_inclusive=leader_indices[index],
             end_index_exclusive=leader_indices[index + 1],
         )
@@ -77,9 +80,9 @@ def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
         basic_blocks.append(basic_block)
     else:
         basic_block = BasicBlock(
-            bytecode=bytecode,
+            bytecode_descriptor=bytecode_descriptor,
             start_index_inclusive=leader_indices[-1],
-            end_index_exclusive=len(bytecode.instructions),
+            end_index_exclusive=len(bytecode_descriptor.instructions),
         )
         jump_target_to_basic_block[leader_indices[-1]] = basic_block
         basic_blocks.append(basic_block)
@@ -93,11 +96,10 @@ def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
                 if parameter.annotation is not inspect._empty
                 else object,
             )
-            for (name, parameter) in bytecode.signature.parameters.items()
+            for (name, parameter) in bytecode_descriptor.signature.parameters.items()
         },
         synthetic_variables=((ValueSource((), object)),)
-        if bytecode.function_type is FunctionType.GENERATOR
-        else (),
+        * bytecode_descriptor.synthetic_count,
         dead=False,
     )
     opcode_index_to_stack_metadata: dict[int, StackMetadata] = {
@@ -116,7 +118,7 @@ def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
                     current_stack_metadata
                 )
 
-    for exception_handler in bytecode.exception_handlers:
+    for exception_handler in bytecode_descriptor.exception_handlers:
         target_index = exception_handler.handler_label.index
         exception_stack_metadata = replace(
             opcode_index_to_stack_metadata[exception_handler.from_label.index],
@@ -146,7 +148,7 @@ def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
                     (StackMetadata.dead_code(),) * len(branches)
                     if original_instruction_metadata.dead
                     else instruction.opcode.next_stack_metadata(
-                        instruction, bytecode, original_instruction_metadata
+                        instruction, bytecode_descriptor, original_instruction_metadata
                     )
                 )
 
@@ -162,12 +164,12 @@ def resolve_stack_metadata(bytecode: "Bytecode") -> tuple[StackMetadata, ...]:
                         )
                     except ValueError as e:
                         raise ValueError(
-                            f"Stack metadata mismatch for bytecode index {branch_target} for bytecode\n{bytecode}"
+                            f"Stack metadata mismatch for bytecode index {branch_target} for bytecode\n{bytecode_descriptor}"
                         ) from e
                     opcode_index_to_stack_metadata[branch_target] = new_opcode_metadata
                     has_changed |= new_opcode_metadata != original_opcode_metadata
 
-        for exception_handler in bytecode.exception_handlers:
+        for exception_handler in bytecode_descriptor.exception_handlers:
             target_index = exception_handler.handler_label.index
             original_exception_stack_metadata = opcode_index_to_stack_metadata[
                 target_index

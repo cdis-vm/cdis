@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import Bytecode, BytecodeDescriptor
     from .._vm import Frame
 
 
@@ -26,7 +26,7 @@ class LoadAndBindInnerClass(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(2).push(ValueSource((instruction,), type)),)
@@ -106,7 +106,7 @@ class LoadTypeAttrOrGlobal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -155,7 +155,7 @@ class StoreTypeAttr(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
@@ -201,7 +201,7 @@ class DeleteTypeAttr(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)

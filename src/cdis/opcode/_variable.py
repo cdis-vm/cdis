@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import BytecodeDescriptor
     from .._vm import Frame
 
 
@@ -46,7 +46,7 @@ class LoadGlobal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -98,7 +98,7 @@ class LoadLocal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         local_metadata = previous_stack_metadata.variables.get(
@@ -152,7 +152,7 @@ class LoadCell(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -222,7 +222,7 @@ class LoadSynthetic(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         synthetic_metadata = previous_stack_metadata.synthetic_variables[self.index]
@@ -269,7 +269,7 @@ class StoreGlobal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -310,7 +310,7 @@ class StoreLocal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
@@ -355,7 +355,7 @@ class StoreCell(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -406,7 +406,7 @@ class StoreSynthetic(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         top = previous_stack_metadata.stack[-1]
@@ -453,7 +453,7 @@ class DeleteGlobal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata,)
@@ -499,7 +499,7 @@ class DeleteLocal(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         new_metadata = previous_stack_metadata.pop(0)
@@ -552,7 +552,7 @@ class DeleteCell(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (

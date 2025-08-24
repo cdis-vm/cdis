@@ -5,7 +5,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import BytecodeDescriptor
     from .._vm import Frame
 
 
@@ -27,7 +27,7 @@ class LoadAndBindInnerGenerator(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -49,7 +49,7 @@ class LoadAndBindInnerGenerator(Opcode):
         frame.stack.append(generator_copy.as_class())
 
 
-@dataclass(frozen=True)
+@dataclass
 class SaveGeneratorState(Opcode):
     """Saves the frame to the generator at TOS, then pops the generator.
 
@@ -83,7 +83,7 @@ class SaveGeneratorState(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         if self.stack_metadata is None:
@@ -136,7 +136,7 @@ class SetGeneratorDelegate(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(2),)
@@ -152,7 +152,7 @@ class GeneratorOperation(Enum):
     THROW = 2
 
 
-@dataclass(frozen=True)
+@dataclass
 class DelegateOrRestoreGeneratorState(Opcode):
     """Pops generator from TOS, restores the frame from the generator, then
     replace TOS with the sent value stored on the generator (or raise an
@@ -194,7 +194,7 @@ class DelegateOrRestoreGeneratorState(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         if self.stack_metadata is None:
@@ -284,7 +284,7 @@ class YieldValue(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)

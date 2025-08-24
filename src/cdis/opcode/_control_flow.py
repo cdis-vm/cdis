@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import BytecodeDescriptor
     from .._vm import Frame
 
 
@@ -28,7 +28,7 @@ class ReturnValue(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -85,7 +85,7 @@ class IfTrue(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1), previous_stack_metadata.pop(1)
@@ -125,7 +125,7 @@ class IfFalse(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata.pop(1), previous_stack_metadata.pop(1)
@@ -196,7 +196,7 @@ class MatchClass(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         pushed_items = tuple(
@@ -298,7 +298,7 @@ class MatchSequence(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata, previous_stack_metadata
@@ -354,7 +354,7 @@ class MatchMapping(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return previous_stack_metadata, previous_stack_metadata
@@ -404,7 +404,7 @@ class JumpTo(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata,)

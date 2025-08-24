@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from types import CellType
 from typing import Mapping
 
-from ._compiler import Bytecode, ExceptionHandler
+from .compiler._api import Bytecode, ExceptionHandler
 
 import time
 
@@ -70,7 +70,7 @@ class Frame:
 class CDisVM:
     frames: list[Frame]
     builtins: dict[str, object]
-    stack_trace: list[(str, int)] | None
+    stack_trace: list[tuple[str, int]] | None
     _start: float
     _timeout: float
     _trace: bool

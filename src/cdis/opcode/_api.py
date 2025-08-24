@@ -9,7 +9,7 @@ import inspect
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import Bytecode, BytecodeDescriptor
     from .._vm import Frame
 
 
@@ -317,7 +317,7 @@ class Opcode(ABC):
     def next_stack_metadata(
         self,
         instruction: "Instruction",
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         """Computes the stack metadata for each index given by `next_bytecode_indices`."""
@@ -361,6 +361,7 @@ class Instruction:
 
 class FunctionType(Enum):
     FUNCTION = "function"
+    LAMBDA = "lambda"
     GENERATOR = "generator"
     CLASS_BODY = "class_body"
     COROUTINE_GENERATOR = "coroutine_generator"
@@ -385,7 +386,7 @@ class FunctionType(Enum):
     def for_function_ast(
         function_ast: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
     ) -> "FunctionType":
-        from .._compiler import is_generator
+        from ..compiler._generator import is_generator
 
         match function_ast:
             case ast.ClassDef():
@@ -395,6 +396,8 @@ class FunctionType(Enum):
                     # TODO: determine if it a coroutine generator from decorator_list
                     return FunctionType.GENERATOR
                 return FunctionType.FUNCTION
+            case ast.Lambda():
+                return FunctionType.LAMBDA
             case ast.AsyncFunctionDef():
                 return (
                     FunctionType.ASYNC_GENERATOR
@@ -421,11 +424,14 @@ class MethodType(Enum):
 
     @staticmethod
     def for_function_ast(
-        function_ast: ast.FunctionDef | ast.AsyncFunctionDef,
+        function_ast: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     ) -> "MethodType":
         # Note: this does assume people don't do something like
         # have another decorator call classmethod indirectly or
         # override classmethod/staticmethod
+        if isinstance(function_ast, ast.Lambda):
+            return MethodType.VIRTUAL
+
         for decorator in function_ast.decorator_list:
             match decorator:
                 case ast.Name(id=name):
@@ -463,7 +469,7 @@ class ClassInfo:
 
     @cached_property
     def methods(self) -> dict[str, "Bytecode"]:
-        from .._compiler import Bytecode
+        from ..compiler import Bytecode
 
         out: dict[str, Bytecode] = {}
 
@@ -474,7 +480,7 @@ class ClassInfo:
         return out
 
     def as_class(self, *, vm=None, **vm_kwargs) -> type:
-        from .._compiler import Bytecode
+        from ..compiler import Bytecode
         from .._vm import CDisVM
 
         class Out:

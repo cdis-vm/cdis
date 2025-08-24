@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Union, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._compiler import Bytecode
+    from ..compiler._api import Bytecode, BytecodeDescriptor
     from .._vm import Frame, CDisVM
 
 
@@ -24,7 +24,7 @@ class PreparedCall:
 
     @staticmethod
     def _convert_args(vm: "CDisVM", args: tuple[object, ...]) -> tuple[object, ...]:
-        from .._compiler import Bytecode
+        from ..compiler import Bytecode
 
         out = []
         for arg in args:
@@ -36,7 +36,7 @@ class PreparedCall:
 
     @staticmethod
     def _convert_kwargs(vm: "CDisVM", kwargs: dict[str, object]) -> dict[str, object]:
-        from .._compiler import Bytecode
+        from ..compiler import Bytecode
 
         out = {}
 
@@ -49,7 +49,7 @@ class PreparedCall:
         return out
 
     def invoke(self, vm: "CDisVM"):
-        from .._compiler import Bytecode
+        from ..compiler import Bytecode
 
         args = PreparedCall._convert_args(vm, self.args)
         kwargs = PreparedCall._convert_kwargs(vm, self.kwargs)
@@ -82,7 +82,7 @@ class CreateCallBuilder(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         # TODO: CallBuilder type
@@ -119,7 +119,7 @@ class WithPositionalArg(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -156,7 +156,7 @@ class AppendPositionalArg(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -193,7 +193,7 @@ class WithKeywordArg(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -228,7 +228,7 @@ class ExtendPositionalArgs(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -263,7 +263,7 @@ class ExtendKeywordArgs(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (previous_stack_metadata.pop(1),)
@@ -310,7 +310,7 @@ class CallWithBuilder(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
@@ -349,7 +349,7 @@ class LoadAndBindInnerFunction(Opcode):
     def next_stack_metadata(
         self,
         instruction: Instruction,
-        bytecode: "Bytecode",
+        bytecode: "BytecodeDescriptor",
         previous_stack_metadata: StackMetadata,
     ) -> tuple[StackMetadata, ...]:
         return (
